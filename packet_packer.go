@@ -20,7 +20,7 @@ var errNothingToPack = errors.New("nothing to pack")
 type packer interface {
 	PackCoalescedPacket(onlyAck bool, maxPacketSize protocol.ByteCount, now time.Time, v protocol.Version) (*coalescedPacket, error)
 	PackAckOnlyPacket(maxPacketSize protocol.ByteCount, now time.Time, v protocol.Version) (shortHeaderPacket, *packetBuffer, error)
-	AppendPacket(_ *packetBuffer, maxPacketSize protocol.ByteCount, now time.Time, v protocol.Version) (shortHeaderPacket, error)
+	AppendPacket(_ *packetBuffer, maxPacketSize protocol.ByteCount, padPacketToMaxPacketSize bool, now time.Time, v protocol.Version) (shortHeaderPacket, error)
 	PackPTOProbePacket(_ protocol.EncryptionLevel, _ protocol.ByteCount, addPingIfEmpty bool, now time.Time, v protocol.Version) (*coalescedPacket, error)
 	PackConnectionClose(*qerr.TransportError, protocol.ByteCount, protocol.Version) (*coalescedPacket, error)
 	PackApplicationClose(*qerr.ApplicationError, protocol.ByteCount, protocol.Version) (*coalescedPacket, error)
@@ -462,20 +462,21 @@ func (p *packetPacker) PackCoalescedPacket(onlyAck bool, maxSize protocol.ByteCo
 // It should be called after the handshake is confirmed.
 func (p *packetPacker) PackAckOnlyPacket(maxSize protocol.ByteCount, now time.Time, v protocol.Version) (shortHeaderPacket, *packetBuffer, error) {
 	buf := getPacketBuffer()
-	packet, err := p.appendPacket(buf, true, maxSize, now, v)
+	packet, err := p.appendPacket(buf, true, maxSize, false, now, v)
 	return packet, buf, err
 }
 
 // AppendPacket packs a packet in the application data packet number space.
 // It should be called after the handshake is confirmed.
-func (p *packetPacker) AppendPacket(buf *packetBuffer, maxSize protocol.ByteCount, now time.Time, v protocol.Version) (shortHeaderPacket, error) {
-	return p.appendPacket(buf, false, maxSize, now, v)
+func (p *packetPacker) AppendPacket(buf *packetBuffer, maxSize protocol.ByteCount, padPacketToMaxPacketSize bool, now time.Time, v protocol.Version) (shortHeaderPacket, error) {
+	return p.appendPacket(buf, false, maxSize, padPacketToMaxPacketSize, now, v)
 }
 
 func (p *packetPacker) appendPacket(
 	buf *packetBuffer,
 	onlyAck bool,
 	maxPacketSize protocol.ByteCount,
+	padToMaxSize bool,
 	now time.Time,
 	v protocol.Version,
 ) (shortHeaderPacket, error) {
@@ -488,11 +489,29 @@ func (p *packetPacker) appendPacket(
 	hdrLen := wire.ShortHeaderLen(connID, pnLen)
 	pl := p.maybeGetShortHeaderPacket(sealer, hdrLen, maxPacketSize, onlyAck, true, now, v)
 	if pl.length == 0 {
-		return shortHeaderPacket{}, errNothingToPack
+		if !padToMaxSize {
+			return shortHeaderPacket{}, errNothingToPack
+		} else {
+			// we need at least one ping frame to elicit an ack
+			/*ping := ackhandler.Frame{Frame: &wire.PingFrame{}}
+			pl = payload{
+				frames: []ackhandler.Frame{ping},
+				length: ping.Frame.Length(v),
+			}*/
+			ping := &wire.PingFrame{}
+			pl.frames = append(pl.frames, ackhandler.Frame{Frame: ping})
+			pl.length += ping.Length(v)
+		}
 	}
 	kp := sealer.KeyPhase()
+	if !padToMaxSize {
+		return p.appendShortHeaderPacket(buf, connID, pn, pnLen, kp, pl, 0, maxPacketSize, sealer, false, v)
+	} else {
+		//simply taken from the mtu discovery packet
+		padding := maxPacketSize - p.shortHeaderPacketLength(connID, pnLen, pl) - protocol.ByteCount(sealer.Overhead())
+		return p.appendShortHeaderPacket(buf, connID, pn, pnLen, kp, pl, padding, maxPacketSize, sealer, false, v)
+	}
 
-	return p.appendShortHeaderPacket(buf, connID, pn, pnLen, kp, pl, 0, maxPacketSize, sealer, false, v)
 }
 
 func (p *packetPacker) maybeGetCryptoPacket(
@@ -803,15 +822,15 @@ func (p *packetPacker) PackMTUProbePacket(ping ackhandler.Frame, size protocol.B
 		length: ping.Frame.Length(v),
 	}
 	buffer := getPacketBuffer()
-	s, err := p.cryptoSetup.Get1RTTSealer()
+	sealer, err := p.cryptoSetup.Get1RTTSealer()
 	if err != nil {
 		return shortHeaderPacket{}, nil, err
 	}
-	connID := p.getDestConnID()
 	pn, pnLen := p.pnManager.PeekPacketNumber(protocol.Encryption1RTT)
-	padding := size - p.shortHeaderPacketLength(connID, pnLen, pl) - protocol.ByteCount(s.Overhead())
-	kp := s.KeyPhase()
-	packet, err := p.appendShortHeaderPacket(buffer, connID, pn, pnLen, kp, pl, padding, size, s, true, v)
+	connID := p.getDestConnID()
+	padding := size - p.shortHeaderPacketLength(connID, pnLen, pl) - protocol.ByteCount(sealer.Overhead())
+	kp := sealer.KeyPhase()
+	packet, err := p.appendShortHeaderPacket(buffer, connID, pn, pnLen, kp, pl, padding, size, sealer, true, v)
 	return packet, buffer, err
 }
 

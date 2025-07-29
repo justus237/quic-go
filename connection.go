@@ -280,6 +280,7 @@ var newConnection = func(
 		s.queueControlFrame,
 		connIDGenerator,
 	)
+	fmt.Println("[DEFENSE_FILTER]")
 	s.preSetup()
 	s.rttStats.SetInitialRTT(rtt)
 	s.sentPacketHandler, s.receivedPacketHandler = ackhandler.NewAckHandler(
@@ -607,6 +608,8 @@ runLoop:
 			// * sending scheduled
 			// * send queue available
 			// * received packets
+			// TODO: [defense/front] to keep the implementation of the padding defense as close as possible to the neqo version, we hook into the timers
+			// but in the future we may want to have a separate channel for defense scheduling or maybe use sendingScheduled
 			select {
 			case <-c.closeChan:
 				break runLoop
@@ -636,7 +639,7 @@ runLoop:
 				break runLoop
 			}
 		}
-
+		fmt.Println(now.String())
 		if keepAliveTime := c.nextKeepAliveTime(); !keepAliveTime.IsZero() && !now.Before(keepAliveTime) {
 			// send a PING frame since there is no activity in the connection
 			c.logger.Debugf("Sending a keep-alive PING to keep the connection alive.")
@@ -855,6 +858,9 @@ func (c *Conn) handleHandshakeConfirmed(now time.Time) error {
 
 	if !c.config.DisablePathMTUDiscovery && c.conn.capabilities().DF {
 		c.mtuDiscoverer.Start(now)
+	}
+	if c.config.EnableFrontDefense {
+		//enable defense
 	}
 	return nil
 }
@@ -2058,11 +2064,7 @@ func (c *Conn) triggerSending(now time.Time) error {
 	case ackhandler.SendNone:
 		return nil
 	case ackhandler.SendPacingLimited:
-		deadline := c.sentPacketHandler.TimeUntilSend()
-		if deadline.IsZero() {
-			deadline = deadlineSendImmediately
-		}
-		c.pacingDeadline = deadline
+		c.resetPacingDeadline()
 		// Allow sending of an ACK if we're pacing limit.
 		// This makes sure that a peer that is mostly receiving data (and thus has an inaccurate cwnd estimate)
 		// sends enough ACKs to allow its peer to utilize the bandwidth.
@@ -2335,7 +2337,7 @@ func (c *Conn) sendProbePacket(sendMode ackhandler.SendMode, now time.Time) erro
 // If there was nothing to pack, the returned size is 0.
 func (c *Conn) appendOneShortHeaderPacket(buf *packetBuffer, maxSize protocol.ByteCount, ecn protocol.ECN, now time.Time) (protocol.ByteCount, error) {
 	startLen := buf.Len()
-	p, err := c.packer.AppendPacket(buf, maxSize, now, c.version)
+	p, err := c.packer.AppendPacket(buf, maxSize, false, now, c.version)
 	if err != nil {
 		return 0, err
 	}
