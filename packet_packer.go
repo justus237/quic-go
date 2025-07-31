@@ -455,6 +455,9 @@ func (p *packetPacker) PackCoalescedPacket(onlyAck bool, maxSize protocol.ByteCo
 		}
 		packet.shortHdrPacket = &shp
 	}
+	fmt.Println("initial/handshake coalesced packet")
+	fmt.Println(buffer.Len())
+	fmt.Println(packet.longHdrPackets)
 	return packet, nil
 }
 

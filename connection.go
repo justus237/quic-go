@@ -142,6 +142,7 @@ type Conn struct {
 	frameParser   wire.FrameParser
 	packer        packer
 	mtuDiscoverer mtuDiscoverer // initialized when the transport parameters are received
+	frontDefense  defenseRunner
 
 	currentMTUEstimate atomic.Uint32
 
@@ -280,7 +281,13 @@ var newConnection = func(
 		s.queueControlFrame,
 		connIDGenerator,
 	)
-	fmt.Println("[DEFENSE_FILTER]")
+	s.frontDefense = newChaffDefender()
+	serverHostname := tlsConf.ServerName
+	if len(serverHostname) == 0 {
+		serverHostname = conn.LocalAddr().String()
+	}
+	fmt.Printf("[DEFENSE_FILTER] defense for %s\n", serverHostname)
+	s.frontDefense.InitTrace(newFrontConfig(), serverHostname)
 	s.preSetup()
 	s.rttStats.SetInitialRTT(rtt)
 	s.sentPacketHandler, s.receivedPacketHandler = ackhandler.NewAckHandler(
@@ -552,6 +559,7 @@ func (c *Conn) run() (err error) {
 
 runLoop:
 	for {
+		fmt.Print("*")
 		if c.framer.QueuedTooManyControlFrames() {
 			c.setCloseError(&closeError{err: &qerr.TransportError{ErrorCode: InternalError}})
 			break runLoop
@@ -610,14 +618,20 @@ runLoop:
 			// * received packets
 			// TODO: [defense/front] to keep the implementation of the padding defense as close as possible to the neqo version, we hook into the timers
 			// but in the future we may want to have a separate channel for defense scheduling or maybe use sendingScheduled
+			fmt.Println("waiting for some timeout to occur")
 			select {
 			case <-c.closeChan:
+				fmt.Println("closing")
 				break runLoop
 			case <-c.timer.Chan():
+				fmt.Println("timer")
 				c.timer.SetRead()
 			case <-c.sendingScheduled:
+				fmt.Println("sending scheduled")
 			case <-sendQueueAvailable:
+				fmt.Println("send queue available")
 			case <-c.notifyReceivedPacket:
+				fmt.Println("received packet")
 				wasProcessed, err := c.handlePackets()
 				if err != nil {
 					c.setCloseError(&closeError{err: err})
@@ -639,7 +653,9 @@ runLoop:
 				break runLoop
 			}
 		}
-		fmt.Println(now.String())
+		fmt.Printf("Processing some timeout at connection level @ Instant %s\n", now)
+		c.frontDefense.ProcessTimer(now)
+
 		if keepAliveTime := c.nextKeepAliveTime(); !keepAliveTime.IsZero() && !now.Before(keepAliveTime) {
 			// send a PING frame since there is no activity in the connection
 			c.logger.Debugf("Sending a keep-alive PING to keep the connection alive.")
@@ -753,6 +769,7 @@ func (c *Conn) nextKeepAliveTime() time.Time {
 }
 
 func (c *Conn) maybeResetTimer() {
+	fmt.Printf("maybe reset timer @ Instant %s\n", time.Now())
 	var deadline time.Time
 	if !c.handshakeComplete {
 		deadline = c.creationTime.Add(c.config.handshakeTimeout())
@@ -773,6 +790,7 @@ func (c *Conn) maybeResetTimer() {
 		c.receivedPacketHandler.GetAlarmTimeout(),
 		c.sentPacketHandler.GetLossDetectionTimeout(),
 		c.pacingDeadline,
+		c.frontDefense.NextTimer(),
 	)
 }
 
@@ -859,8 +877,11 @@ func (c *Conn) handleHandshakeConfirmed(now time.Time) error {
 	if !c.config.DisablePathMTUDiscovery && c.conn.capabilities().DF {
 		c.mtuDiscoverer.Start(now)
 	}
+	//enable defense
+	// the packer api has all the non-application stuff in PackCoalescedPacket
+	// soooo TODO: modify other packer functions to also be able to send dummy packets in other TLS epochs than application
 	if c.config.EnableFrontDefense {
-		//enable defense
+		c.frontDefense.Start(now)
 	}
 	return nil
 }
@@ -2052,6 +2073,7 @@ func (c *Conn) applyTransportParameters() {
 		maxPacketSize,
 		c.tracer,
 	)
+
 }
 
 func (c *Conn) triggerSending(now time.Time) error {
@@ -2337,9 +2359,14 @@ func (c *Conn) sendProbePacket(sendMode ackhandler.SendMode, now time.Time) erro
 // If there was nothing to pack, the returned size is 0.
 func (c *Conn) appendOneShortHeaderPacket(buf *packetBuffer, maxSize protocol.ByteCount, ecn protocol.ECN, now time.Time) (protocol.ByteCount, error) {
 	startLen := buf.Len()
-	p, err := c.packer.AppendPacket(buf, maxSize, false, now, c.version)
+	needsChaff := c.frontDefense.NeedsChaff()
+	fmt.Printf("needs chaff? %t; max packet size: %d\n", needsChaff, maxSize)
+	p, err := c.packer.AppendPacket(buf, maxSize, needsChaff, now, c.version)
 	if err != nil {
 		return 0, err
+	}
+	if needsChaff {
+		c.frontDefense.SentChaffPacket(now)
 	}
 	size := buf.Len() - startLen
 	c.logShortHeaderPacket(p.DestConnID, p.Ack, p.Frames, p.StreamFrames, p.PacketNumber, p.PacketNumberLen, p.KeyPhase, ecn, size, false)
