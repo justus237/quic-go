@@ -455,9 +455,6 @@ func (p *packetPacker) PackCoalescedPacket(onlyAck bool, maxSize protocol.ByteCo
 		}
 		packet.shortHdrPacket = &shp
 	}
-	fmt.Println("initial/handshake coalesced packet")
-	fmt.Println(buffer.Len())
-	fmt.Println(packet.longHdrPackets)
 	return packet, nil
 }
 
@@ -504,7 +501,6 @@ func (p *packetPacker) appendPacket(
 			ping := &wire.PingFrame{}
 			pl.frames = append(pl.frames, ackhandler.Frame{Frame: ping})
 			pl.length += ping.Length(v)
-			fmt.Printf("chaff packet with PN %d\n", pn)
 		}
 	}
 	kp := sealer.KeyPhase()

@@ -286,7 +286,6 @@ var newConnection = func(
 	if len(serverHostname) == 0 {
 		serverHostname = conn.LocalAddr().String()
 	}
-	fmt.Printf("[DEFENSE_FILTER] defense for %s\n", serverHostname)
 	s.frontDefense.InitTrace(newFrontConfig(), serverHostname)
 	s.preSetup()
 	s.rttStats.SetInitialRTT(rtt)
@@ -559,7 +558,6 @@ func (c *Conn) run() (err error) {
 
 runLoop:
 	for {
-		fmt.Print("*")
 		if c.framer.QueuedTooManyControlFrames() {
 			c.setCloseError(&closeError{err: &qerr.TransportError{ErrorCode: InternalError}})
 			break runLoop
@@ -618,20 +616,14 @@ runLoop:
 			// * received packets
 			// TODO: [defense/front] to keep the implementation of the padding defense as close as possible to the neqo version, we hook into the timers
 			// but in the future we may want to have a separate channel for defense scheduling or maybe use sendingScheduled
-			fmt.Println("waiting for some timeout to occur")
 			select {
 			case <-c.closeChan:
-				fmt.Println("closing")
 				break runLoop
 			case <-c.timer.Chan():
-				fmt.Println("timer")
 				c.timer.SetRead()
 			case <-c.sendingScheduled:
-				fmt.Println("sending scheduled")
 			case <-sendQueueAvailable:
-				fmt.Println("send queue available")
 			case <-c.notifyReceivedPacket:
-				fmt.Println("received packet")
 				wasProcessed, err := c.handlePackets()
 				if err != nil {
 					c.setCloseError(&closeError{err: err})
@@ -653,7 +645,6 @@ runLoop:
 				break runLoop
 			}
 		}
-		fmt.Printf("Processing some timeout at connection level @ Instant %s\n", now)
 		c.frontDefense.ProcessTimer(now)
 
 		if keepAliveTime := c.nextKeepAliveTime(); !keepAliveTime.IsZero() && !now.Before(keepAliveTime) {
@@ -769,7 +760,6 @@ func (c *Conn) nextKeepAliveTime() time.Time {
 }
 
 func (c *Conn) maybeResetTimer() {
-	fmt.Printf("maybe reset timer @ Instant %s\n", time.Now())
 	var deadline time.Time
 	if !c.handshakeComplete {
 		deadline = c.creationTime.Add(c.config.handshakeTimeout())
@@ -2360,7 +2350,6 @@ func (c *Conn) sendProbePacket(sendMode ackhandler.SendMode, now time.Time) erro
 func (c *Conn) appendOneShortHeaderPacket(buf *packetBuffer, maxSize protocol.ByteCount, ecn protocol.ECN, now time.Time) (protocol.ByteCount, error) {
 	startLen := buf.Len()
 	needsChaff := c.frontDefense.NeedsChaff()
-	fmt.Printf("needs chaff? %t; max packet size: %d\n", needsChaff, maxSize)
 	p, err := c.packer.AppendPacket(buf, maxSize, needsChaff, now, c.version)
 	if err != nil {
 		return 0, err
