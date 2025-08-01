@@ -504,6 +504,7 @@ func (p *packetPacker) appendPacket(
 			ping := &wire.PingFrame{}
 			pl.frames = append(pl.frames, ackhandler.Frame{Frame: ping})
 			pl.length += ping.Length(v)
+			fmt.Printf("chaff packet with PN %d\n", pn)
 		}
 	}
 	kp := sealer.KeyPhase()

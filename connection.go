@@ -877,7 +877,7 @@ func (c *Conn) handleHandshakeConfirmed(now time.Time) error {
 	if !c.config.DisablePathMTUDiscovery && c.conn.capabilities().DF {
 		c.mtuDiscoverer.Start(now)
 	}
-	//enable defense
+	// enable defense
 	// the packer api has all the non-application stuff in PackCoalescedPacket
 	// soooo TODO: modify other packer functions to also be able to send dummy packets in other TLS epochs than application
 	if c.config.EnableFrontDefense {

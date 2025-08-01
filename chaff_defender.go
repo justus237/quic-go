@@ -111,8 +111,10 @@ type chaffDefender struct {
 	defenseTrace []time.Duration
 	//next control interval as absolute timestamp
 	nextUpdate time.Time
-	//implicit trace start time
+	// implicit trace start time
 	start time.Time
+	// end time
+	end time.Time
 	// the actions in the current control interval (absolute timestamps to compare to now)
 	actionQueue []time.Time
 	serverName  string
@@ -166,7 +168,7 @@ func (def *chaffDefender) InitTrace(defenseConfig defenseConfig, serverName stri
 		csvPath, exists := os.LookupEnv("TRACE_CSV_DIR")
 		if exists {
 			path := filepath.Join(csvPath, fmt.Sprintf("%s-front-defense-seed-%s.csv", def.serverName, strconv.FormatUint(seed, 10)))
-			file, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+			file, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0666)
 			if err != nil {
 				fmt.Printf("failed creating file: %s", err)
 				return
@@ -195,9 +197,17 @@ func (def *chaffDefender) NextTimer() time.Time {
 	}
 	return def.nextUpdate
 }
+
 func (def *chaffDefender) ProcessTimer(now time.Time) {
-	if def.start.IsZero() {
-		fmt.Println("ProcessTimer called before start")
+	// if both defense and next actions are empty, the defense is done
+	// the check is in ProcessTimer so that the check happens quite late but is called almost directly from within the main run loop
+	// TODO: defense done should probably be moved to the runLoop in connection.go
+	if len(def.defenseTrace) == 0 && len(def.actionQueue) == 0 {
+		//TODO: signal to our python script that the defense is done using unix domain sockets
+		fmt.Println("DEFENSE DONE")
+	}
+	if def.start.IsZero() || !def.end.IsZero() {
+		fmt.Println("ProcessTimer called before start or after end")
 		return
 	}
 	if len(def.defenseTrace) == 0 || def.defenseTrace == nil {
@@ -233,14 +243,21 @@ func (def *chaffDefender) ProcessTimer(now time.Time) {
 		def.defenseTrace = def.defenseTrace[1:]
 	}
 	def.nextUpdate = now.Add(def.controlInterval)
+	// if the trace is empty,
+	if len(def.defenseTrace) == 0 {
+		def.end = now
+		def.nextUpdate = time.Time{}
+	}
 
 }
 func (def *chaffDefender) NeedsChaff() bool {
 	return len(def.actionQueue) > 0
 }
+
+// This will panic if you don't bother calling NeedsChaff() before.
 func (def *chaffDefender) SentChaffPacket(now time.Time) {
 	// pop front and compare timestamps
 	nextTimeToSend := def.actionQueue[0]
 	def.actionQueue = def.actionQueue[1:]
-	fmt.Printf("packet expected at time %s; now is %s; delta %s", nextTimeToSend, now, now.Sub(nextTimeToSend))
+	fmt.Printf("packet [%d] expected at time %s; now is %s; delta %s\n", nextTimeToSend.Sub(def.start).Milliseconds(), nextTimeToSend, now, now.Sub(nextTimeToSend))
 }
