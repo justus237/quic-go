@@ -213,10 +213,8 @@ func (def *chaffDefender) ProcessTimer(now time.Time) {
 	// this ensures that we don't grow the action queue infinitely when packet loss occurs frequently
 	// also the API for time in go is ridiculous
 	fmt.Printf("cleaning action queue, old length: %d", len(def.actionQueue))
-	if len(def.actionQueue) > 0 {
-		for def.actionQueue[0].Before(now.Add(-3 * time.Millisecond)) {
-			def.actionQueue = def.actionQueue[1:]
-		}
+	for len(def.actionQueue) > 0 && def.actionQueue[0].Before(now.Add(-3*time.Millisecond)) {
+		def.actionQueue = def.actionQueue[1:]
 	}
 	fmt.Printf("; new length: %d\n", len(def.actionQueue))
 
@@ -228,14 +226,11 @@ func (def *chaffDefender) ProcessTimer(now time.Time) {
 	// effectively this means we will drift by up to 5 ms compared to the original trace
 	// it also does not seem to matter whether we look at the next 5 ms in the trace or the past 5 ms
 	fmt.Printf("[processTimer] defense trace left: %d\n", len(def.defenseTrace))
-	if len(def.defenseTrace) > 0 {
-		fmt.Println(def.defenseTrace[0])
-		for def.defenseTrace[0] < endOfCurrentControlInterval {
-			// definitely not safe from goroutines
-			// convert the durations back to absolute timestamps
-			def.actionQueue = append(def.actionQueue, def.start.Add(def.defenseTrace[0]))
-			def.defenseTrace = def.defenseTrace[1:]
-		}
+	for len(def.defenseTrace) > 0 && def.defenseTrace[0] < endOfCurrentControlInterval {
+		// definitely not safe from goroutines
+		// convert the durations back to absolute timestamps
+		def.actionQueue = append(def.actionQueue, def.start.Add(def.defenseTrace[0]))
+		def.defenseTrace = def.defenseTrace[1:]
 	}
 	def.nextUpdate = now.Add(def.controlInterval)
 
