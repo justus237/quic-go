@@ -203,7 +203,7 @@ func (def *chaffDefender) ProcessTimer(now time.Time) {
 	// if both defense and next actions are empty, the defense is done
 	// the check is in ProcessTimer so that the check happens quite late but is called almost directly from within the main run loop
 	// TODO: defense done should probably be moved to the runLoop in connection.go
-	if len(def.defenseTrace) == 0 && len(def.actionQueue) == 0 {
+	if !def.start.IsZero() && !def.end.IsZero() && len(def.defenseTrace) == 0 && len(def.actionQueue) == 0 {
 		//TODO: signal to our python script that the defense is done using unix domain sockets
 		fmt.Println("DEFENSE DONE")
 	}
