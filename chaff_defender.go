@@ -192,6 +192,9 @@ func (def *chaffDefender) NextTimer() time.Time {
 }
 
 func (def *chaffDefender) ProcessTimer(now time.Time) {
+	if def.start.IsZero() {
+		return
+	}
 	//log.Println(def.dstConnID)
 	// if both defense and next actions are empty, the defense is done
 	// the check is in ProcessTimer so that the check happens quite late but is called almost directly from within the main run loop
@@ -199,9 +202,6 @@ func (def *chaffDefender) ProcessTimer(now time.Time) {
 	if !def.start.IsZero() && !def.end.IsZero() && len(def.defenseTrace) == 0 && def.chaffPacketQueue == 0 {
 		//TODO: signal to our python script that the defense is done using unix domain sockets
 		fmt.Println("DEFENSE DONE")
-	}
-	if def.start.IsZero() || !def.end.IsZero() {
-		return
 	}
 	if len(def.defenseTrace) == 0 || def.defenseTrace == nil {
 		return
