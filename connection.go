@@ -257,6 +257,7 @@ var newConnection = func(
 		logger:              logger,
 		version:             v,
 	}
+	//fmt.Println("origDestConnID:", origDestConnID, "destConnID:", destConnID, "srcConnID:", srcConnID, "clientDestConnID:", clientDestConnID, "retrySrcConnID:", retrySrcConnID)
 	if origDestConnID.Len() > 0 {
 		s.logID = origDestConnID.String()
 	} else {
@@ -281,12 +282,7 @@ var newConnection = func(
 		s.queueControlFrame,
 		connIDGenerator,
 	)
-	s.frontDefense = newChaffDefender()
-	serverHostname := tlsConf.ServerName
-	if len(serverHostname) == 0 {
-		serverHostname = conn.LocalAddr().String()
-	}
-	s.frontDefense.InitTrace(newFrontConfig(), serverHostname)
+
 	s.preSetup()
 	s.rttStats.SetInitialRTT(rtt)
 	s.sentPacketHandler, s.receivedPacketHandler = ackhandler.NewAckHandler(
@@ -348,6 +344,8 @@ var newConnection = func(
 	s.packer = newPacketPacker(srcConnID, s.connIDManager.Get, s.initialStream, s.handshakeStream, s.sentPacketHandler, s.retransmissionQueue, cs, s.framer, s.receivedPacketHandler, s.datagramQueue, s.perspective)
 	s.unpacker = newPacketUnpacker(cs, s.srcConnIDLen)
 	s.cryptoStreamManager = newCryptoStreamManager(s.initialStream, s.handshakeStream, s.oneRTTStream)
+	// TODO: initialize the chaff defender with some more CIDs so that it's easier to identify the connection's defense trace
+	s.frontDefense = newChaffDefender()
 	return &wrappedConn{Conn: s}
 }
 
@@ -835,6 +833,21 @@ func (c *Conn) handleHandshakeComplete(now time.Time) error {
 		return err
 	}
 
+	// TODO: theoretically, the front defense stuff could also live in handleHandshakeConfirmed (where the MTU prober is also started), not sure what's better...
+	// this seems to be the earliest point where we know the server hostname
+	// the hostname is only really needed for writing the csv file, so we should probably split writing the csv file from the defense init and write the csv here, but init earlier
+	// i.e., ideally we would also have padding for init and handshake packets like in neqo
+	// the packer api has all the methods for initial and handshake packets in PackCoalescedPacket
+	// soooo TODO: modify other packer functions to also be able to send dummy packets in other TLS epochs than application
+	if c.config.EnableFrontDefense {
+		serverHostname := c.cryptoStreamHandler.ConnectionState().ConnectionState.ServerName
+		if len(serverHostname) == 0 {
+			serverHostname = c.LocalAddr().String()
+		}
+		c.frontDefense.InitTrace(newFrontConfig(), serverHostname, c.connIDManager.Get().String())
+		c.frontDefense.Start(now)
+	}
+
 	ticket, err := c.cryptoStreamHandler.GetSessionTicket()
 	if err != nil {
 		return err
@@ -866,12 +879,6 @@ func (c *Conn) handleHandshakeConfirmed(now time.Time) error {
 
 	if !c.config.DisablePathMTUDiscovery && c.conn.capabilities().DF {
 		c.mtuDiscoverer.Start(now)
-	}
-	// enable defense
-	// the packer api has all the non-application stuff in PackCoalescedPacket
-	// soooo TODO: modify other packer functions to also be able to send dummy packets in other TLS epochs than application
-	if c.config.EnableFrontDefense {
-		c.frontDefense.Start(now)
 	}
 	return nil
 }

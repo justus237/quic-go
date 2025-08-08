@@ -3,6 +3,7 @@ package quic
 import (
 	"bufio"
 	"fmt"
+	"log"
 	"math"
 	"math/rand/v2"
 	"os"
@@ -20,7 +21,7 @@ import (
 // this concept does not directly exist in quic-go
 // in either case we need a function that provides when the next timer should fire for the defense
 type defenseRunner interface {
-	InitTrace(defenseConfig defenseConfig, serverName string)
+	InitTrace(defenseConfig defenseConfig, serverName, dstConnID string)
 	// set the start time for the trace
 	Start(now time.Time)
 	NextTimer() time.Time
@@ -112,6 +113,8 @@ type chaffDefender struct {
 	//actionQueue []time.Time
 	serverName string
 
+	dstConnID string
+
 	//rttStats *utils.RTTStats
 
 	//inFlight protocol.ByteCount // the size of the probe packet currently in flight. InvalidByteCount if none is in flight
@@ -133,11 +136,18 @@ func (def *chaffDefender) Start(now time.Time) {
 		def.start = now
 		def.controlInterval = time.Millisecond * 5
 		def.nextUpdate = now
+	} else {
+		log.Println("ChaffDefender.Start called multiple times!")
 	}
 }
-func (def *chaffDefender) InitTrace(defenseConfig defenseConfig, serverName string) {
+func (def *chaffDefender) InitTrace(defenseConfig defenseConfig, serverName, dstConnID string) {
 	if def.start.IsZero() {
+		if def.defenseTrace != nil {
+			log.Println("INIT CALLED MULTIPLE TIMES!")
+			return
+		}
 		def.serverName = serverName
+		def.dstConnID = dstConnID
 		//read seed from env var, otherwise randomly generate
 		seedFromEnv, exists := os.LookupEnv("FRONT_SEED")
 		seed := rand.Uint64()
@@ -150,7 +160,7 @@ func (def *chaffDefender) InitTrace(defenseConfig defenseConfig, serverName stri
 		def.defenseTrace = defenseConfig.InitTrace()
 		csvPath, exists := os.LookupEnv("TRACE_CSV_DIR")
 		if exists {
-			path := filepath.Join(csvPath, fmt.Sprintf("%s-front-defense-seed-%s.csv", def.serverName, strconv.FormatUint(seed, 10)))
+			path := filepath.Join(csvPath, fmt.Sprintf("%s-%s-front-defense-seed-%s.csv", serverName, dstConnID, strconv.FormatUint(seed, 10)))
 			file, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0666)
 			if err != nil {
 				return
@@ -177,16 +187,18 @@ func (def *chaffDefender) NextTimer() time.Time {
 	if len(def.defenseTrace) == 0 || def.defenseTrace == nil {
 		return time.Time{}
 	}
-	//this should be smarter...
+	//this should be smarter and take into account when the next packet is actually needed, as there are a lot of control intervals without any packets toward the end
 	return def.nextUpdate
 }
 
 func (def *chaffDefender) ProcessTimer(now time.Time) {
+	//log.Println(def.dstConnID)
 	// if both defense and next actions are empty, the defense is done
 	// the check is in ProcessTimer so that the check happens quite late but is called almost directly from within the main run loop
 	// TODO: defense done should probably be moved to the runLoop in connection.go
-	if len(def.defenseTrace) == 0 && def.chaffPacketQueue == 0 {
+	if !def.start.IsZero() && !def.end.IsZero() && len(def.defenseTrace) == 0 && def.chaffPacketQueue == 0 {
 		//TODO: signal to our python script that the defense is done using unix domain sockets
+		fmt.Println("DEFENSE DONE")
 	}
 	if def.start.IsZero() || !def.end.IsZero() {
 		return

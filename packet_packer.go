@@ -487,6 +487,7 @@ func (p *packetPacker) appendPacket(
 	pn, pnLen := p.pnManager.PeekPacketNumber(protocol.Encryption1RTT)
 	connID := p.getDestConnID()
 	hdrLen := wire.ShortHeaderLen(connID, pnLen)
+	//log.Println("connID:", connID, "srcConnID:", p.srcConnID)
 	pl := p.maybeGetShortHeaderPacket(sealer, hdrLen, maxPacketSize, onlyAck, true, now, v)
 	if pl.length == 0 {
 		if !padToMaxSize {
