@@ -345,6 +345,7 @@ var newConnection = func(
 	s.unpacker = newPacketUnpacker(cs, s.srcConnIDLen)
 	s.cryptoStreamManager = newCryptoStreamManager(s.initialStream, s.handshakeStream, s.oneRTTStream)
 	// TODO: initialize the chaff defender with some more CIDs so that it's easier to identify the connection's defense trace
+	// TODO: maybe make it nil if we are not defending? would require some changes to NextTimer being called...
 	s.frontDefense = newChaffDefender()
 	return &wrappedConn{Conn: s}
 }

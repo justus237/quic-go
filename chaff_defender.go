@@ -214,10 +214,7 @@ func (def *chaffDefender) ProcessTimer(now time.Time) {
 	//convert real time to trace time (i.e., from time instant to duration since start)
 	endOfCurrentControlInterval := now.Add(def.controlInterval).Sub(def.start)
 	// this is rather easy compared to the version in neqo because a packet is simply a timestamp
-	// theoretically, you could model this as a simple counter, but we want to see how much we drift compared to the trace
-	// add all packets that should be sent in the next 5 ms
-	// effectively this means we will drift by up to 5 ms compared to the original trace
-	// it also does not seem to matter whether we look at the next 5 ms in the trace or the past 5 ms
+	// we don't have any kind of sliding window, each control interval is clean and does not have past unsent packets
 	for len(def.defenseTrace) > 0 && def.defenseTrace[0] < endOfCurrentControlInterval {
 		// definitely not safe from goroutines
 		// convert the durations back to absolute timestamps
