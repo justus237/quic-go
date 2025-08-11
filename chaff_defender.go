@@ -136,6 +136,7 @@ func (def *chaffDefender) Start(now time.Time) {
 		def.start = now
 		def.controlInterval = time.Millisecond * 5
 		def.nextUpdate = now
+		//TODO: add hacky defense state signaling via files here...
 	} else {
 		log.Println("ChaffDefender.Start called multiple times!")
 	}
@@ -160,7 +161,7 @@ func (def *chaffDefender) InitTrace(defenseConfig defenseConfig, serverName, dst
 		def.defenseTrace = defenseConfig.InitTrace()
 		csvPath, exists := os.LookupEnv("TRACE_CSV_DIR")
 		if exists {
-			path := filepath.Join(csvPath, fmt.Sprintf("%s-%s-front-defense-seed-%s.csv", serverName, dstConnID, strconv.FormatUint(seed, 10)))
+			path := filepath.Join(csvPath, fmt.Sprintf("%s-%s-front-server-defense-seed-%s.csv", serverName, dstConnID, strconv.FormatUint(seed, 10)))
 			file, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0666)
 			if err != nil {
 				return
