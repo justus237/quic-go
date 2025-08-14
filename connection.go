@@ -845,6 +845,9 @@ func (c *Conn) handleHandshakeComplete(now time.Time) error {
 		if len(serverHostname) == 0 {
 			serverHostname = c.LocalAddr().String()
 		}
+		if c.logger.Debug() {
+			c.logger.Debugf("enabling front defense for CID %s to server %s", c.connIDManager.Get().String(), serverHostname)
+		}
 		c.frontDefense.InitTrace(newFrontConfig(), serverHostname, c.connIDManager.Get().String())
 		c.frontDefense.Start(now)
 	}
@@ -2363,6 +2366,9 @@ func (c *Conn) appendOneShortHeaderPacket(buf *packetBuffer, maxSize protocol.By
 		return 0, err
 	}
 	if needsChaff {
+		if c.logger.Debug() {
+			c.logger.Debugf("sending defense chaff packet: %v", now)
+		}
 		c.frontDefense.SentChaffPacket(now)
 	}
 	size := buf.Len() - startLen
