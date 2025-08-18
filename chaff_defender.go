@@ -178,7 +178,6 @@ func (def *chaffDefender) InitTrace(defenseConfig defenseConfig, serverName, dst
 		}
 
 	}
-
 }
 
 func (def *chaffDefender) NextTimer() time.Time {
@@ -214,19 +213,41 @@ func (def *chaffDefender) ProcessTimer(now time.Time) {
 
 	//convert real time to trace time (i.e., from time instant to duration since start)
 	endOfCurrentControlInterval := now.Add(def.controlInterval).Sub(def.start)
+	// we have a sliding window of 5 milliseconds around the defense trace dummy packet send events
+	// if a timeout is missed, the packet will still be sent if it was within half of the window in the past
+	// effectively the window is not 5 milliseconds but 5 milliseconds in the future and 2.5 milliseconds in the past
+	// however, the past is only a counter to timers being missed due to other processing going on
+	startOfCurrentControlInterval := now.Add(-1 * (def.controlInterval / 2)).Sub(def.start)
 	// this is rather easy compared to the version in neqo because a packet is simply a timestamp
-	// we don't have any kind of sliding window, each control interval is clean and does not have past unsent packets
+	// we don't have any kind of sliding window, each control interval is clean and does not have past unsent packets -> this is not true, it will take ALL unsent packets from the trace, even if they are in the past
+	// this is wrong. if we miss a timeout this all falls apart
+	// also there is no handling of packets that are too old, i.e., if a timeout happens too late we still act like they are within the current control interval
+
+	// drop packets outsie the window into the past
+	for len(def.defenseTrace) > 0 && def.defenseTrace[0] < startOfCurrentControlInterval {
+		missedDummyPacket := def.start.Add(def.defenseTrace[0])
+		log.Println("missed defense packet at", missedDummyPacket, "for server", def.serverName, "DCID", def.dstConnID)
+		def.defenseTrace = def.defenseTrace[1:]
+	}
+
 	for len(def.defenseTrace) > 0 && def.defenseTrace[0] < endOfCurrentControlInterval {
 		// definitely not safe from goroutines
 		// convert the durations back to absolute timestamps
 		def.chaffPacketQueue += 1
 		def.defenseTrace = def.defenseTrace[1:]
 	}
-	def.nextUpdate = now.Add(def.controlInterval)
-	// if the trace is empty,
+	log.Printf("%d packets in queue within 5 ms window\n", def.chaffPacketQueue)
+
+	//def.nextUpdate = now.Add(def.controlInterval)
+	// if the trace is empty, set end and set nextupdate to dummy time
 	if len(def.defenseTrace) == 0 {
 		def.end = now
 		def.nextUpdate = time.Time{}
+	} else {
+		// we peak into the defense trace to see when the next dummy packet is due
+		def.nextUpdate = def.start.Add(def.defenseTrace[0])
+		timeoutDuration := def.nextUpdate.Sub(now)
+		log.Println("duration until next dummy packet: ", timeoutDuration)
 	}
 
 }

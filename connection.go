@@ -2361,6 +2361,9 @@ func (c *Conn) sendProbePacket(sendMode ackhandler.SendMode, now time.Time) erro
 func (c *Conn) appendOneShortHeaderPacket(buf *packetBuffer, maxSize protocol.ByteCount, ecn protocol.ECN, now time.Time) (protocol.ByteCount, error) {
 	startLen := buf.Len()
 	needsChaff := c.frontDefense.NeedsChaff()
+	if c.logger.Debug() {
+		c.logger.Debugf("defense in appendOneShortHeaderPacket: %v, needs chaff? %d", now, needsChaff)
+	}
 	p, err := c.packer.AppendPacket(buf, maxSize, needsChaff, now, c.version)
 	if err != nil {
 		return 0, err
