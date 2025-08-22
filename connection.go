@@ -10,6 +10,7 @@ import (
 	"net"
 	"reflect"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -848,7 +849,17 @@ func (c *Conn) handleHandshakeComplete(now time.Time) error {
 		if c.logger.Debug() {
 			c.logger.Debugf("enabling front defense for CID %s to server %s", c.connIDManager.Get().String(), serverHostname)
 		}
-		c.frontDefense.InitTrace(newFrontConfig(), serverHostname, c.connIDManager.Get().String())
+		// can we cast this to a UDPAddr?
+		var remotePort string
+		if strings.Contains(c.conn.RemoteAddr().String(), ":") {
+			var err error
+			_, remotePort, err = net.SplitHostPort(c.conn.RemoteAddr().String())
+			if err != nil {
+				remotePort = "-1"
+			}
+		}
+
+		c.frontDefense.InitTrace(newFrontConfig(), serverHostname, c.connIDManager.Get().String(), remotePort)
 		c.frontDefense.Start(now)
 	}
 

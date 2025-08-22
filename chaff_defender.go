@@ -21,7 +21,7 @@ import (
 // this concept does not directly exist in quic-go
 // in either case we need a function that provides when the next timer should fire for the defense
 type defenseRunner interface {
-	InitTrace(defenseConfig defenseConfig, serverName, dstConnID string)
+	InitTrace(defenseConfig defenseConfig, serverName, dstConnID, remotePort string)
 	// set the start time for the trace
 	Start(now time.Time)
 	NextTimer() time.Time
@@ -115,6 +115,8 @@ type chaffDefender struct {
 
 	dstConnID string
 
+	remotePort string
+
 	//rttStats *utils.RTTStats
 
 	//inFlight protocol.ByteCount // the size of the probe packet currently in flight. InvalidByteCount if none is in flight
@@ -141,7 +143,7 @@ func (def *chaffDefender) Start(now time.Time) {
 		log.Println("ChaffDefender.Start called multiple times!")
 	}
 }
-func (def *chaffDefender) InitTrace(defenseConfig defenseConfig, serverName, dstConnID string) {
+func (def *chaffDefender) InitTrace(defenseConfig defenseConfig, serverName, dstConnID, remotePort string) {
 	if def.start.IsZero() {
 		if def.defenseTrace != nil {
 			log.Println("INIT CALLED MULTIPLE TIMES!")
@@ -149,6 +151,7 @@ func (def *chaffDefender) InitTrace(defenseConfig defenseConfig, serverName, dst
 		}
 		def.serverName = serverName
 		def.dstConnID = dstConnID
+		def.remotePort = remotePort
 		//read seed from env var, otherwise randomly generate
 		seedFromEnv, exists := os.LookupEnv("FRONT_SEED")
 		seed := rand.Uint64()
@@ -161,7 +164,7 @@ func (def *chaffDefender) InitTrace(defenseConfig defenseConfig, serverName, dst
 		def.defenseTrace = defenseConfig.InitTrace()
 		csvPath, exists := os.LookupEnv("TRACE_CSV_DIR")
 		if exists {
-			path := filepath.Join(csvPath, fmt.Sprintf("%s-%s-front-server-defense-seed-%s.csv", serverName, dstConnID, strconv.FormatUint(seed, 10)))
+			path := filepath.Join(csvPath, fmt.Sprintf("%s-%s-server-side-%s-front-defense-seed-%s.csv", def.remotePort, def.serverName, def.dstConnID, strconv.FormatUint(seed, 10)))
 			file, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0666)
 			if err != nil {
 				return
