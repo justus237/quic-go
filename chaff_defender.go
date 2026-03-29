@@ -21,9 +21,9 @@ import (
 // this concept does not directly exist in quic-go
 // in either case we need a function that provides when the next timer should fire for the defense
 type defenseRunner interface {
-	InitTrace(defenseConfig defenseConfig, serverName, dstConnID, remotePort string)
+	InitTrace(defenseConfig defenseConfig, remotePort string)
 	// set the start time for the trace
-	Start(now time.Time)
+	Start(now time.Time, controlIntervalIsSlidingWindow bool)
 	NextTimer() time.Time
 	ProcessTimer(now time.Time)
 	NeedsChaff() bool
@@ -111,11 +111,13 @@ type chaffDefender struct {
 	// the actions in the current control interval (absolute timestamps to compare to now)
 	chaffPacketQueue uint32
 	//actionQueue []time.Time
-	serverName string
+	//serverName string
 
-	dstConnID string
+	//dstConnID string
 
 	remotePort string
+
+	controlIntervalIsSlidingWindow bool
 
 	//rttStats *utils.RTTStats
 
@@ -133,24 +135,25 @@ func newChaffDefender() *chaffDefender {
 	return &chaffDefender{}
 }
 
-func (def *chaffDefender) Start(now time.Time) {
+func (def *chaffDefender) Start(now time.Time, controlIntervalIsSlidingWindow bool) {
 	if def.start.IsZero() {
 		def.start = now
 		def.controlInterval = time.Millisecond * 5
 		def.nextUpdate = now
+		def.controlIntervalIsSlidingWindow = controlIntervalIsSlidingWindow
 		//TODO: add hacky defense state signaling via files here...
 	} else {
 		log.Println("ChaffDefender.Start called multiple times!")
 	}
 }
-func (def *chaffDefender) InitTrace(defenseConfig defenseConfig, serverName, dstConnID, remotePort string) {
+func (def *chaffDefender) InitTrace(defenseConfig defenseConfig, remotePort string) {
 	if def.start.IsZero() {
 		if def.defenseTrace != nil {
 			log.Println("INIT CALLED MULTIPLE TIMES!")
 			return
 		}
-		def.serverName = serverName
-		def.dstConnID = dstConnID
+		/*def.serverName = serverName
+		def.dstConnID = dstConnID*/
 		def.remotePort = remotePort
 		//read seed from env var, otherwise randomly generate
 		seedFromEnv, exists := os.LookupEnv("FRONT_SEED")
@@ -164,7 +167,7 @@ func (def *chaffDefender) InitTrace(defenseConfig defenseConfig, serverName, dst
 		def.defenseTrace = defenseConfig.InitTrace()
 		csvPath, exists := os.LookupEnv("TRACE_CSV_DIR")
 		if exists {
-			path := filepath.Join(csvPath, fmt.Sprintf("%s-%s-server-side-%s-front-defense-seed-%s.csv", def.remotePort, def.serverName, def.dstConnID, strconv.FormatUint(seed, 10)))
+			path := filepath.Join(csvPath, fmt.Sprintf("%s-server-side-front-defense-seed-%s.csv", def.remotePort, strconv.FormatUint(seed, 10)))
 			file, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0666)
 			if err != nil {
 				return
@@ -209,37 +212,49 @@ func (def *chaffDefender) ProcessTimer(now time.Time) {
 	if len(def.defenseTrace) == 0 || def.defenseTrace == nil {
 		return
 	}
-	if now.Before(def.nextUpdate) {
-		return
-	}
-	def.chaffPacketQueue = 0
+	if def.controlIntervalIsSlidingWindow {
+		if now.Before(def.nextUpdate) {
+			return
+		}
 
-	//convert real time to trace time (i.e., from time instant to duration since start)
-	endOfCurrentControlInterval := now.Add(def.controlInterval).Sub(def.start)
-	// we have a sliding window of 5 milliseconds around the defense trace dummy packet send events
-	// if a timeout is missed, the packet will still be sent if it was within half of the window in the past
-	// effectively the window is not 5 milliseconds but 5 milliseconds in the future and 2.5 milliseconds in the past
-	// however, the past is only a counter to timers being missed due to other processing going on
-	startOfCurrentControlInterval := now.Add(-1 * (def.controlInterval / 2)).Sub(def.start)
-	// this is rather easy compared to the version in neqo because a packet is simply a timestamp
-	// we don't have any kind of sliding window, each control interval is clean and does not have past unsent packets -> this is not true, it will take ALL unsent packets from the trace, even if they are in the past
-	// this is wrong. if we miss a timeout this all falls apart
-	// also there is no handling of packets that are too old, i.e., if a timeout happens too late we still act like they are within the current control interval
+		def.chaffPacketQueue = 0
 
-	// drop packets outsie the window into the past
-	for len(def.defenseTrace) > 0 && def.defenseTrace[0] < startOfCurrentControlInterval {
-		missedDummyPacket := def.start.Add(def.defenseTrace[0])
-		log.Println("missed defense packet at", missedDummyPacket, "for server", def.serverName, "DCID", def.dstConnID)
-		def.defenseTrace = def.defenseTrace[1:]
+		//convert real time to trace time (i.e., from time instant to duration since start)
+		endOfCurrentControlInterval := now.Add(def.controlInterval).Sub(def.start)
+		// we have a sliding window of 5 milliseconds around the defense trace dummy packet send events
+		// if a timeout is missed, the packet will still be sent if it was within half of the window in the past
+		// effectively the window is not 5 milliseconds but 5 milliseconds in the future and 2.5 milliseconds in the past
+		// however, the past is only a counter to timers being missed due to other processing going on
+		startOfCurrentControlInterval := now.Add(-1 * (def.controlInterval / 2)).Sub(def.start)
+		// this is rather easy compared to the version in neqo because a packet is simply a timestamp
+		// we don't have any kind of sliding window, each control interval is clean and does not have past unsent packets -> this is not true, it will take ALL unsent packets from the trace, even if they are in the past
+		// this is wrong. if we miss a timeout this all falls apart
+		// also there is no handling of packets that are too old, i.e., if a timeout happens too late we still act like they are within the current control interval
+
+		// drop packets outsie the window into the past
+		for len(def.defenseTrace) > 0 && def.defenseTrace[0] < startOfCurrentControlInterval {
+			missedDummyPacket := def.start.Add(def.defenseTrace[0])
+			log.Println("missed defense packet at", missedDummyPacket) //, "for server", def.serverName, "DCID", def.dstConnID)
+			def.defenseTrace = def.defenseTrace[1:]
+		}
+		// add packets within the window
+		for len(def.defenseTrace) > 0 && def.defenseTrace[0] < endOfCurrentControlInterval {
+			// definitely not safe from goroutines
+			// convert the durations back to absolute timestamps
+			def.chaffPacketQueue += 1
+			def.defenseTrace = def.defenseTrace[1:]
+		}
+	} else {
+		endOfCurrentControlInterval := now.Add(def.controlInterval).Sub(def.start)
+		for len(def.defenseTrace) > 0 && def.defenseTrace[0] < endOfCurrentControlInterval {
+			// definitely not safe from goroutines
+			// convert the durations back to absolute timestamps
+			def.chaffPacketQueue += 1
+			def.defenseTrace = def.defenseTrace[1:]
+		}
 	}
 
-	for len(def.defenseTrace) > 0 && def.defenseTrace[0] < endOfCurrentControlInterval {
-		// definitely not safe from goroutines
-		// convert the durations back to absolute timestamps
-		def.chaffPacketQueue += 1
-		def.defenseTrace = def.defenseTrace[1:]
-	}
-	log.Printf("%d packets in queue within 5 ms window\n", def.chaffPacketQueue)
+	log.Printf("%d packets in queue\n", def.chaffPacketQueue)
 
 	//def.nextUpdate = now.Add(def.controlInterval)
 	// if the trace is empty, set end and set nextupdate to dummy time

@@ -182,7 +182,8 @@ type Config struct {
 	// Path MTU discovery is only available on systems that allow setting of the Don't Fragment (DF) bit.
 	DisablePathMTUDiscovery bool
 
-	EnableFrontDefense bool
+	EnableFrontDefense        bool
+	FrontDefenseSlidingWindow bool
 	// Allow0RTT allows the application to decide if a 0-RTT connection attempt should be accepted.
 	// Only valid for the server.
 	Allow0RTT bool

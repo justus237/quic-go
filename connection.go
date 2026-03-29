@@ -859,8 +859,8 @@ func (c *Conn) handleHandshakeComplete(now time.Time) error {
 			}
 		}
 
-		c.frontDefense.InitTrace(newFrontConfig(), serverHostname, c.connIDManager.Get().String(), remotePort)
-		c.frontDefense.Start(now)
+		c.frontDefense.InitTrace(newFrontConfig(), remotePort)
+		c.frontDefense.Start(now, c.config.FrontDefenseSlidingWindow)
 	}
 
 	ticket, err := c.cryptoStreamHandler.GetSessionTicket()
