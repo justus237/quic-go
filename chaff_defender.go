@@ -21,20 +21,22 @@ import (
 // this concept does not directly exist in quic-go
 // in either case we need a function that provides when the next timer should fire for the defense
 type defenseRunner interface {
-	InitTrace(defenseConfig defenseConfig, remotePort string)
+	InitSchedule(defenseConfig defenseConfig, remotePort string, controlIntervalIsSlidingWindow bool)
 	// set the start time for the trace
-	Start(now time.Time, controlIntervalIsSlidingWindow bool)
-	NextTimer() time.Time
-	ProcessTimer(now time.Time)
+	Start(now time.Time)
+	NextTimer(expiryTime time.Time) time.Time
+	ProcessTimer(now, expiryTime time.Time)
 	NeedsChaff() bool
 	SentChaffPacket(now time.Time)
+	NeedsKeepalive() bool
 	/*CurrentSize() protocol.ByteCount
 	GetPing(now time.Time) (ping ackhandler.Frame, datagramSize protocol.ByteCount)
 	Reset(now time.Time, start, max protocol.ByteCount)*/
 }
 
+// [TODO]: this should probably be the place where sliding window is decided and not in the defenserunner start function
 type defenseConfig interface {
-	InitTrace() []time.Duration
+	InitSchedule() []time.Duration
 	SetSeed(uint64)
 }
 
@@ -54,7 +56,7 @@ func newFrontConfig() *frontConfig {
 	}
 }
 
-func (fConf *frontConfig) InitTrace() []time.Duration {
+func (fConf *frontConfig) InitSchedule() []time.Duration {
 	//randv2; not entirely sure why two seeds are needed?
 	rng := rand.New(rand.NewPCG(fConf.seed, fConf.seed))
 	//since we are the server in quic-go (no checks for that though!) the outgoing packets are using nofServerPackets
@@ -99,9 +101,9 @@ func samplePacketTimestamps(peakMin, peakMax float64, maxPackets uint32, rng *ra
 }
 
 type chaffDefender struct {
-	controlInterval time.Duration
+	controlIntervalLength time.Duration
 	// the trace we have left, excluding the current control interval (relative to start, thus durations)
-	defenseTrace []time.Duration
+	defenseSchedule []time.Duration
 	//next control interval as absolute timestamp
 	nextUpdate time.Time
 	// implicit trace start time
@@ -109,6 +111,7 @@ type chaffDefender struct {
 	// end time
 	end time.Time
 	// the actions in the current control interval (absolute timestamps to compare to now)
+	// == neqo_transport::DefenseRunner.control_interval
 	chaffPacketQueue uint32
 	//actionQueue []time.Time
 	//serverName string
@@ -118,6 +121,10 @@ type chaffDefender struct {
 	remotePort string
 
 	controlIntervalIsSlidingWindow bool
+
+	needsKeepalive bool
+
+	nextControlInterval time.Duration
 
 	//rttStats *utils.RTTStats
 
@@ -135,26 +142,28 @@ func newChaffDefender() *chaffDefender {
 	return &chaffDefender{}
 }
 
-func (def *chaffDefender) Start(now time.Time, controlIntervalIsSlidingWindow bool) {
+func (def *chaffDefender) Start(now time.Time) {
 	if def.start.IsZero() {
 		def.start = now
-		def.controlInterval = time.Millisecond * 5
+		def.controlIntervalLength = time.Millisecond * 5
 		def.nextUpdate = now
-		def.controlIntervalIsSlidingWindow = controlIntervalIsSlidingWindow
 		//TODO: add hacky defense state signaling via files here...
 	} else {
 		log.Println("ChaffDefender.Start called multiple times!")
 	}
 }
-func (def *chaffDefender) InitTrace(defenseConfig defenseConfig, remotePort string) {
+
+// at this point, this is equivalent to the neqo new function of the defense runner there
+func (def *chaffDefender) InitSchedule(defenseConfig defenseConfig, remotePort string, controlIntervalIsSlidingWindow bool) {
 	if def.start.IsZero() {
-		if def.defenseTrace != nil {
+		if def.defenseSchedule != nil {
 			log.Println("INIT CALLED MULTIPLE TIMES!")
 			return
 		}
 		/*def.serverName = serverName
 		def.dstConnID = dstConnID*/
 		def.remotePort = remotePort
+		def.controlIntervalIsSlidingWindow = controlIntervalIsSlidingWindow
 		//read seed from env var, otherwise randomly generate
 		seedFromEnv, exists := os.LookupEnv("FRONT_SEED")
 		seed := rand.Uint64()
@@ -164,7 +173,7 @@ func (def *chaffDefender) InitTrace(defenseConfig defenseConfig, remotePort stri
 			}
 		}
 		defenseConfig.SetSeed(seed)
-		def.defenseTrace = defenseConfig.InitTrace()
+		def.defenseSchedule = defenseConfig.InitSchedule()
 		csvPath, exists := os.LookupEnv("TRACE_CSV_DIR")
 		if exists {
 			path := filepath.Join(csvPath, fmt.Sprintf("%s-server-side-front-defense-seed-%s.csv", def.remotePort, strconv.FormatUint(seed, 10)))
@@ -176,40 +185,72 @@ func (def *chaffDefender) InitTrace(defenseConfig defenseConfig, remotePort stri
 			// we write out as if this were a trace from the client perspective, where negative numbers indicate incoming packets
 			packetSizeAndDirection := "-1280"
 			_, _ = dataWriter.WriteString("time_ms,size\n")
-			for _, traceTime := range def.defenseTrace {
+			for _, traceTime := range def.defenseSchedule {
 				_, _ = dataWriter.WriteString(fmt.Sprintf("%d,%s", traceTime.Milliseconds(), packetSizeAndDirection) + "\n")
 			}
 			dataWriter.Flush()
 			file.Close()
 		}
 
+	} else {
+		log.Println("ChaffDefender.InitSchedule called multiple times!")
+		def.start = time.Time{}
+		def.end = time.Time{}
+		def.nextUpdate = time.Time{}
+		def.defenseSchedule = nil
+		def.chaffPacketQueue = 0
 	}
 }
 
-func (def *chaffDefender) NextTimer() time.Time {
-	if def.start.IsZero() {
-		return time.Time{}
+func (def *chaffDefender) NextTimer(expiryTime time.Time) time.Time {
+	if def.controlIntervalIsSlidingWindow {
+		if def.start.IsZero() || !def.end.IsZero() || def.defenseSchedule == nil || len(def.defenseSchedule) == 0 {
+			return time.Time{}
+		}
+		//this should be smarter and take into account when the next packet is actually needed, as there are a lot of control intervals without any packets toward the end
+		return def.nextUpdate
+	} else {
+		if def.chaffPacketQueue > 0 {
+			return time.Now()
+		}
+		var instant time.Time
+		if def.defenseSchedule == nil || len(def.defenseSchedule) == 0 {
+			instant = def.start.Add(def.nextControlInterval)
+		}
+		nextDefenseTime := def.defenseSchedule[0]
+		if nextDefenseTime < def.nextControlInterval {
+			instant = def.start.Add(nextDefenseTime)
+		} else {
+			instant = def.start.Add(def.nextControlInterval)
+		}
+		cancelExpiryAt := expiryTime.Add(-100 * time.Millisecond)
+		if cancelExpiryAt.Before(instant) {
+			instant = cancelExpiryAt
+		}
+		if instant.Before(time.Now()) {
+			instant = time.Now()
+		}
+		return instant
+
 	}
-	if len(def.defenseTrace) == 0 || def.defenseTrace == nil {
-		return time.Time{}
-	}
-	//this should be smarter and take into account when the next packet is actually needed, as there are a lot of control intervals without any packets toward the end
-	return def.nextUpdate
 }
 
-func (def *chaffDefender) ProcessTimer(now time.Time) {
-	if def.start.IsZero() {
+func (def *chaffDefender) ProcessTimer(now, expiryTime time.Time) {
+	/*if def.start.IsZero() {
 		return
 	}
 	//log.Println(def.dstConnID)
 	// if both defense and next actions are empty, the defense is done
 	// the check is in ProcessTimer so that the check happens quite late but is called almost directly from within the main run loop
 	// TODO: defense done should probably be moved to the runLoop in connection.go
-	if !def.start.IsZero() && !def.end.IsZero() && len(def.defenseTrace) == 0 && def.chaffPacketQueue == 0 {
+	if !def.start.IsZero() && !def.end.IsZero() && len(def.defenseSchedule) == 0 && def.chaffPacketQueue == 0 {
 		//TODO: signal to our python script that the defense is done using unix domain sockets
 		fmt.Println("DEFENSE DONE")
 	}
-	if len(def.defenseTrace) == 0 || def.defenseTrace == nil {
+	if len(def.defenseSchedule) == 0 || def.defenseSchedule == nil {
+		return
+		}*/
+	if def.start.IsZero() || def.nextUpdate.IsZero() || !def.end.IsZero() || def.defenseSchedule == nil || len(def.defenseSchedule) == 0 {
 		return
 	}
 	if def.controlIntervalIsSlidingWindow {
@@ -220,55 +261,68 @@ func (def *chaffDefender) ProcessTimer(now time.Time) {
 		def.chaffPacketQueue = 0
 
 		//convert real time to trace time (i.e., from time instant to duration since start)
-		endOfCurrentControlInterval := now.Add(def.controlInterval).Sub(def.start)
+		endOfCurrentControlInterval := now.Add(def.controlIntervalLength).Sub(def.start)
 		// we have a sliding window of 5 milliseconds around the defense trace dummy packet send events
 		// if a timeout is missed, the packet will still be sent if it was within half of the window in the past
 		// effectively the window is not 5 milliseconds but 5 milliseconds in the future and 2.5 milliseconds in the past
 		// however, the past is only a counter to timers being missed due to other processing going on
-		startOfCurrentControlInterval := now.Add(-1 * (def.controlInterval / 2)).Sub(def.start)
+		startOfCurrentControlInterval := now.Add(-1 * (def.controlIntervalLength / 2)).Sub(def.start)
 		// this is rather easy compared to the version in neqo because a packet is simply a timestamp
 		// we don't have any kind of sliding window, each control interval is clean and does not have past unsent packets -> this is not true, it will take ALL unsent packets from the trace, even if they are in the past
 		// this is wrong. if we miss a timeout this all falls apart
 		// also there is no handling of packets that are too old, i.e., if a timeout happens too late we still act like they are within the current control interval
 
 		// drop packets outsie the window into the past
-		for len(def.defenseTrace) > 0 && def.defenseTrace[0] < startOfCurrentControlInterval {
-			missedDummyPacket := def.start.Add(def.defenseTrace[0])
+		for len(def.defenseSchedule) > 0 && def.defenseSchedule[0] < startOfCurrentControlInterval {
+			missedDummyPacket := def.start.Add(def.defenseSchedule[0])
 			log.Println("missed defense packet at", missedDummyPacket) //, "for server", def.serverName, "DCID", def.dstConnID)
-			def.defenseTrace = def.defenseTrace[1:]
+			def.defenseSchedule = def.defenseSchedule[1:]
 		}
 		// add packets within the window
-		for len(def.defenseTrace) > 0 && def.defenseTrace[0] < endOfCurrentControlInterval {
+		for len(def.defenseSchedule) > 0 && def.defenseSchedule[0] < endOfCurrentControlInterval {
 			// definitely not safe from goroutines
 			// convert the durations back to absolute timestamps
 			def.chaffPacketQueue += 1
-			def.defenseTrace = def.defenseTrace[1:]
+			def.defenseSchedule = def.defenseSchedule[1:]
+		}
+		//def.nextUpdate = now.Add(def.controlInterval)
+		// if the trace is empty, set end and set nextupdate to dummy time
+		if len(def.defenseSchedule) == 0 {
+			def.end = now
+			def.nextUpdate = time.Time{}
+		} else {
+			// we peak into the defense trace to see when the next dummy packet is due
+			def.nextUpdate = def.start.Add(def.defenseSchedule[0])
+			timeoutDuration := def.nextUpdate.Sub(now)
+			log.Println("duration until next dummy packet: ", timeoutDuration)
 		}
 	} else {
-		endOfCurrentControlInterval := now.Add(def.controlInterval).Sub(def.start)
-		for len(def.defenseTrace) > 0 && def.defenseTrace[0] < endOfCurrentControlInterval {
+		sinceStart := now.Sub(def.start)
+		//endOfCurrentControlInterval := now.Add(def.controlIntervalLength).Sub(def.start)
+		for len(def.defenseSchedule) > 0 && def.defenseSchedule[0] < sinceStart {
 			// definitely not safe from goroutines
 			// convert the durations back to absolute timestamps
 			def.chaffPacketQueue += 1
-			def.defenseTrace = def.defenseTrace[1:]
+			def.defenseSchedule = def.defenseSchedule[1:]
+		}
+		cancelExpiryAt := expiryTime.Add(-100 * time.Millisecond)
+		if def.end.IsZero() && cancelExpiryAt.After(now) && def.chaffPacketQueue == 0 {
+			def.needsKeepalive = true
 		}
 	}
 
 	log.Printf("%d packets in queue\n", def.chaffPacketQueue)
 
-	//def.nextUpdate = now.Add(def.controlInterval)
-	// if the trace is empty, set end and set nextupdate to dummy time
-	if len(def.defenseTrace) == 0 {
-		def.end = now
-		def.nextUpdate = time.Time{}
-	} else {
-		// we peak into the defense trace to see when the next dummy packet is due
-		def.nextUpdate = def.start.Add(def.defenseTrace[0])
-		timeoutDuration := def.nextUpdate.Sub(now)
-		log.Println("duration until next dummy packet: ", timeoutDuration)
-	}
-
 }
+
+func (def *chaffDefender) NeedsKeepalive() bool {
+	if def.needsKeepalive {
+		def.needsKeepalive = false
+		return true
+	}
+	return false
+}
+
 func (def *chaffDefender) NeedsChaff() bool {
 	return def.chaffPacketQueue > 0
 }

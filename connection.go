@@ -645,13 +645,16 @@ runLoop:
 				break runLoop
 			}
 		}
-		c.frontDefense.ProcessTimer(now)
+		c.frontDefense.ProcessTimer(now, c.nextIdleTimeoutTime())
 
 		if keepAliveTime := c.nextKeepAliveTime(); !keepAliveTime.IsZero() && !now.Before(keepAliveTime) {
 			// send a PING frame since there is no activity in the connection
 			c.logger.Debugf("Sending a keep-alive PING to keep the connection alive.")
 			c.framer.QueueControlFrame(&wire.PingFrame{})
 			c.keepAlivePingSent = true
+		} else if c.frontDefense.NeedsKeepalive() {
+			c.logger.Debugf("Sending a keep-alive defense ping to keep the connection alive.")
+			c.framer.QueueControlFrame(&wire.PingFrame{})
 		} else if !c.handshakeComplete && now.Sub(c.creationTime) >= c.config.handshakeTimeout() {
 			c.destroyImpl(qerr.ErrHandshakeTimeout)
 			break runLoop
@@ -780,7 +783,7 @@ func (c *Conn) maybeResetTimer() {
 		c.receivedPacketHandler.GetAlarmTimeout(),
 		c.sentPacketHandler.GetLossDetectionTimeout(),
 		c.pacingDeadline,
-		c.frontDefense.NextTimer(),
+		c.frontDefense.NextTimer(c.nextIdleTimeoutTime()),
 	)
 }
 
@@ -859,8 +862,8 @@ func (c *Conn) handleHandshakeComplete(now time.Time) error {
 			}
 		}
 
-		c.frontDefense.InitTrace(newFrontConfig(), remotePort)
-		c.frontDefense.Start(now, c.config.FrontDefenseSlidingWindow)
+		c.frontDefense.InitSchedule(newFrontConfig(), remotePort, c.config.FrontDefenseSlidingWindow)
+		c.frontDefense.Start(now)
 	}
 
 	ticket, err := c.cryptoStreamHandler.GetSessionTicket()
