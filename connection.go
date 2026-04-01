@@ -2145,6 +2145,49 @@ func (c *Conn) sendPackets(now time.Time) error {
 		}
 	}
 
+	if c.frontDefense.NeedsChaff() {
+		//if we need chaff and pmtud at the same time, we register with pmtud but not with congestion control
+		if c.handshakeConfirmed && c.mtuDiscoverer != nil && c.mtuDiscoverer.ShouldSendProbe(now) {
+			ping, size := c.mtuDiscoverer.GetPing(now)
+			p, buf, err := c.packer.PackMTUProbePacket(ping, size, c.version)
+			if err != nil {
+				return err
+			}
+			ecn := c.sentPacketHandler.ECNMode(true)
+			c.logShortHeaderPacket(p.DestConnID, p.Ack, p.Frames, p.StreamFrames, p.PacketNumber, p.PacketNumberLen, p.KeyPhase, ecn, buf.Len(), false)
+			// we do not register the packet because that would add it to congestion control tracking
+			c.sendQueue.Send(buf, 0, ecn)
+			// There's (likely) more data to send. Loop around again.
+			c.scheduleSending()
+			return nil
+		}
+		//check if we are in handshake or app data
+		if c.droppedInitialKeys || c.handshakeConfirmed {
+			c.frontDefense.SentChaffPacket(now)
+			// chaff packet size should be mtu sized
+			// basically a ping + padding to mtu
+			buf := getPacketBuffer()
+			ecn := c.sentPacketHandler.ECNMode(true)
+			mtu := protocol.ByteCount(c.currentMTUEstimate.Load())
+			//this will always be a short header packet; maybe this will not work if droppedinitialkeys is true but handshakeconfirmed is false...
+			p, err := c.packer.AppendPacket(buf, mtu, true, now, c.version)
+			if err != nil {
+				if err != errNothingToPack {
+					return err
+				}
+				if buf.Len() == 0 {
+					buf.Release()
+					return nil
+				}
+			}
+			c.logShortHeaderPacket(p.DestConnID, p.Ack, p.Frames, p.StreamFrames, p.PacketNumber, p.PacketNumberLen, p.KeyPhase, ecn, buf.Len(), false)
+			c.sendQueue.Send(buf, 0, ecn)
+			// There's (likely) more data to send. Loop around again.
+			c.scheduleSending()
+			return nil
+		}
+	}
+
 	// Path MTU Discovery
 	// Can't use GSO, since we need to send a single packet that's larger than our current maximum size.
 	// Performance-wise, this doesn't matter, since we only send a very small (<10) number of
@@ -2374,15 +2417,15 @@ func (c *Conn) sendProbePacket(sendMode ackhandler.SendMode, now time.Time) erro
 // If there was nothing to pack, the returned size is 0.
 func (c *Conn) appendOneShortHeaderPacket(buf *packetBuffer, maxSize protocol.ByteCount, ecn protocol.ECN, now time.Time) (protocol.ByteCount, error) {
 	startLen := buf.Len()
-	needsChaff := c.frontDefense.NeedsChaff()
+	needsDefensePadding := c.frontDefense.NeedsPadding()
 	if c.logger.Debug() {
-		c.logger.Debugf("defense in appendOneShortHeaderPacket: %v, needs chaff? %d", now, needsChaff)
+		c.logger.Debugf("defense in appendOneShortHeaderPacket: %v, needs padding? %d", now, needsDefensePadding)
 	}
-	p, err := c.packer.AppendPacket(buf, maxSize, needsChaff, now, c.version)
+	p, err := c.packer.AppendPacket(buf, maxSize, needsDefensePadding, now, c.version)
 	if err != nil {
 		return 0, err
 	}
-	if needsChaff {
+	if needsDefensePadding {
 		if c.logger.Debug() {
 			c.logger.Debugf("sending defense chaff packet: %v", now)
 		}

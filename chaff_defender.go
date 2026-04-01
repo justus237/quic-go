@@ -26,6 +26,7 @@ type defenseRunner interface {
 	Start(now time.Time)
 	NextTimer(expiryTime time.Time) time.Time
 	ProcessTimer(now, expiryTime time.Time)
+	NeedsPadding() bool
 	NeedsChaff() bool
 	SentChaffPacket(now time.Time)
 	NeedsKeepalive() bool
@@ -210,18 +211,20 @@ func (def *chaffDefender) NextTimer(expiryTime time.Time) time.Time {
 		//this should be smarter and take into account when the next packet is actually needed, as there are a lot of control intervals without any packets toward the end
 		return def.nextUpdate
 	} else {
-		if def.chaffPacketQueue > 0 {
-			return time.Now()
-		}
 		var instant time.Time
-		if def.defenseSchedule == nil || len(def.defenseSchedule) == 0 {
+		if def.chaffPacketQueue > 0 {
+			instant = time.Now()
+		} else if !def.end.IsZero() {
+			instant = def.end
+		} else if def.defenseSchedule == nil || len(def.defenseSchedule) == 0 {
 			instant = def.start.Add(def.nextControlInterval)
-		}
-		nextDefenseTime := def.defenseSchedule[0]
-		if nextDefenseTime < def.nextControlInterval {
-			instant = def.start.Add(nextDefenseTime)
 		} else {
-			instant = def.start.Add(def.nextControlInterval)
+			nextDefenseTime := def.defenseSchedule[0]
+			if nextDefenseTime < def.nextControlInterval {
+				instant = def.start.Add(nextDefenseTime)
+			} else {
+				instant = def.start.Add(def.nextControlInterval)
+			}
 		}
 		cancelExpiryAt := expiryTime.Add(-100 * time.Millisecond)
 		if cancelExpiryAt.Before(instant) {
@@ -250,10 +253,11 @@ func (def *chaffDefender) ProcessTimer(now, expiryTime time.Time) {
 	if len(def.defenseSchedule) == 0 || def.defenseSchedule == nil {
 		return
 		}*/
-	if def.start.IsZero() || def.nextUpdate.IsZero() || !def.end.IsZero() || def.defenseSchedule == nil || len(def.defenseSchedule) == 0 {
-		return
-	}
+
 	if def.controlIntervalIsSlidingWindow {
+		if def.start.IsZero() || def.nextUpdate.IsZero() || !def.end.IsZero() || def.defenseSchedule == nil || len(def.defenseSchedule) == 0 {
+			return
+		}
 		if now.Before(def.nextUpdate) {
 			return
 		}
@@ -297,7 +301,14 @@ func (def *chaffDefender) ProcessTimer(now, expiryTime time.Time) {
 			log.Println("duration until next dummy packet: ", timeoutDuration)
 		}
 	} else {
+		if def.start.IsZero() || !def.end.IsZero() {
+			return
+		}
 		sinceStart := now.Sub(def.start)
+		ciIndex := sinceStart.Milliseconds() / def.controlIntervalLength.Milliseconds()
+		if def.nextControlInterval < sinceStart {
+			def.nextControlInterval = time.Duration(ciIndex+1) * def.controlIntervalLength
+		}
 		//endOfCurrentControlInterval := now.Add(def.controlIntervalLength).Sub(def.start)
 		for len(def.defenseSchedule) > 0 && def.defenseSchedule[0] < sinceStart {
 			// definitely not safe from goroutines
@@ -324,7 +335,17 @@ func (def *chaffDefender) NeedsKeepalive() bool {
 }
 
 func (def *chaffDefender) NeedsChaff() bool {
-	return def.chaffPacketQueue > 0
+	if !def.controlIntervalIsSlidingWindow {
+		return def.chaffPacketQueue > 0
+	}
+	return false
+}
+
+func (def *chaffDefender) NeedsPadding() bool {
+	if def.controlIntervalIsSlidingWindow {
+		return def.chaffPacketQueue > 0
+	}
+	return false
 }
 
 func (def *chaffDefender) SentChaffPacket(now time.Time) {
