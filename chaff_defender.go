@@ -148,6 +148,7 @@ func (def *chaffDefender) Start(now time.Time) {
 		def.start = now
 		def.controlIntervalLength = time.Millisecond * 5
 		def.nextUpdate = now
+		//log.Println("Defense starting", now)
 		//TODO: add hacky defense state signaling via files here...
 	} else {
 		log.Println("ChaffDefender.Start called multiple times!")

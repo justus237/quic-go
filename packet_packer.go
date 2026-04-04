@@ -846,8 +846,10 @@ func (p *packetPacker) PackChaffLongPacket(maxPacketSize protocol.ByteCount, v p
 	} else if is, err := p.cryptoSetup.GetInitialSealer(); err == nil {
 		sealer, encLevel = is, protocol.EncryptionInitial
 	} else {
+		//panic("unknown encryption level")
 		return nil, nil, errors.New("no long-header encryption level available")
 	}
+	//log.Println("found encryption level", encLevel)
 
 	ping := ackhandler.Frame{Frame: &wire.PingFrame{}, Handler: emptyHandler{}}
 	pl := payload{
@@ -863,7 +865,7 @@ func (p *packetPacker) PackChaffLongPacket(maxPacketSize protocol.ByteCount, v p
 		return nil, nil, err
 	}
 	//why are long header packets a reference but short header ones are not?
-	return longHdrPacket, nil, nil
+	return longHdrPacket, buffer, nil
 }
 
 func (p *packetPacker) PackMTUProbePacket(ping ackhandler.Frame, size protocol.ByteCount, v protocol.Version) (shortHeaderPacket, *packetBuffer, error) {

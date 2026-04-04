@@ -348,6 +348,21 @@ var newConnection = func(
 	// TODO: initialize the chaff defender with some more CIDs so that it's easier to identify the connection's defense trace
 	// TODO: maybe make it nil if we are not defending? would require some changes to NextTimer being called...
 	s.frontDefense = newChaffDefender()
+	if conf.EnableFrontDefense && !conf.FrontDefenseSlidingWindow {
+		// can we cast this to a UDPAddr?
+		var remotePort string
+		if strings.Contains(conn.RemoteAddr().String(), ":") {
+			var err error
+			_, remotePort, err = net.SplitHostPort(conn.RemoteAddr().String())
+			if err != nil {
+				remotePort = "-1"
+			}
+		}
+
+		s.frontDefense.InitSchedule(newFrontConfig(), remotePort, conf.FrontDefenseSlidingWindow)
+		s.frontDefense.Start(s.creationTime)
+	}
+	//log.Println("CONNECTION BEING SETUP")
 	return &wrappedConn{Conn: s}
 }
 
@@ -833,6 +848,7 @@ func (c *Conn) handleHandshakeComplete(now time.Time) error {
 		return nil
 	}
 
+	c.logger.Debugf("dropping handshake keys on server\n")
 	// All these only apply to the server side.
 	if err := c.handleHandshakeConfirmed(now); err != nil {
 		return err
@@ -844,7 +860,7 @@ func (c *Conn) handleHandshakeComplete(now time.Time) error {
 	// i.e., ideally we would also have padding for init and handshake packets like in neqo
 	// the packer api has all the methods for initial and handshake packets in PackCoalescedPacket
 	// soooo TODO: modify other packer functions to also be able to send dummy packets in other TLS epochs than application
-	if c.config.EnableFrontDefense {
+	if c.config.EnableFrontDefense && c.config.FrontDefenseSlidingWindow {
 		serverHostname := c.cryptoStreamHandler.ConnectionState().ConnectionState.ServerName
 		if len(serverHostname) == 0 {
 			serverHostname = c.LocalAddr().String()
@@ -1413,6 +1429,7 @@ func (c *Conn) handleUnpackedLongHeaderPacket(
 
 	if c.perspective == protocol.PerspectiveServer && packet.encryptionLevel == protocol.EncryptionHandshake &&
 		!c.droppedInitialKeys {
+		c.logger.Debugf("dropping initial keys on server\n")
 		// On the server side, Initial keys are dropped as soon as the first Handshake packet is received.
 		// See Section 4.9.1 of RFC 9001.
 		if err := c.dropEncryptionLevel(protocol.EncryptionInitial, rcvTime); err != nil {
@@ -2253,6 +2270,7 @@ func (c *Conn) sendPackets(now time.Time) error {
 func (c *Conn) sendChaffPacket(now time.Time) error {
 	//need to be able to send long and short header chaff packets for QCSD
 	if !c.handshakeConfirmed {
+		c.logger.Debugf("attempting to send long header chaff of size ", c.maxPacketSize())
 		ecn := c.sentPacketHandler.ECNMode(false)
 		//generate a packet
 		p, buf, err := c.packer.PackChaffLongPacket(c.maxPacketSize(), c.version)
@@ -2260,7 +2278,7 @@ func (c *Conn) sendChaffPacket(now time.Time) error {
 			return err
 		}
 		// log
-		c.logger.Debugf("-> Sending chaff packet (%d bytes) for connection %s", buf.Len(), c.logID)
+		c.logger.Debugf("-> Sending chaff packet (%d bytes) for connection %s, pn=%d, epoch=%s", buf.Len(), c.logID, p.header.PacketNumber, p.EncryptionLevel())
 		fmt.Println("-> Sending chaff packet (%d bytes) for connection %s", buf.Len(), c.logID)
 		c.logLongHeaderPacket(p, ecn)
 		// register
@@ -2280,12 +2298,13 @@ func (c *Conn) sendChaffPacket(now time.Time) error {
 			p.EncryptionLevel(),
 			ecn,
 			p.length,
-			false,
+			true,
 			false,
 		)
 		c.connIDManager.SentPacket()
 		c.sendQueue.Send(buf, 0, ecn)
 	} else {
+		c.logger.Debugf("attempting to send short header chaff")
 		ecn := c.sentPacketHandler.ECNMode(true)
 		//generate packet
 		p, buf, err := c.packer.PackChaffShortPacket(c.maxPacketSize(), c.version)
@@ -2312,7 +2331,7 @@ func (c *Conn) sendChaffPacket(now time.Time) error {
 			protocol.Encryption1RTT,
 			ecn,
 			p.Length,
-			p.IsPathMTUProbePacket,
+			true,
 			false,
 		)
 
