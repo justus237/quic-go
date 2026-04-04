@@ -2146,47 +2146,58 @@ func (c *Conn) sendPackets(now time.Time) error {
 	}
 
 	if c.frontDefense.NeedsChaff() {
-		//if we need chaff and pmtud at the same time, we register with pmtud but not with congestion control
-		if c.handshakeConfirmed && c.mtuDiscoverer != nil && c.mtuDiscoverer.ShouldSendProbe(now) {
-			ping, size := c.mtuDiscoverer.GetPing(now)
-			p, buf, err := c.packer.PackMTUProbePacket(ping, size, c.version)
-			if err != nil {
-				return err
-			}
-			ecn := c.sentPacketHandler.ECNMode(true)
-			c.logShortHeaderPacket(p.DestConnID, p.Ack, p.Frames, p.StreamFrames, p.PacketNumber, p.PacketNumberLen, p.KeyPhase, ecn, buf.Len(), false)
-			// we do not register the packet because that would add it to congestion control tracking
-			c.sendQueue.Send(buf, 0, ecn)
-			// There's (likely) more data to send. Loop around again.
-			c.scheduleSending()
-			return nil
+		c.logger.Debugf("Need Chaff")
+		c.frontDefense.SentChaffPacket(now)
+		err := c.sendChaffPacket(now)
+		if err != nil {
+			c.logger.Debugf("unable to send chaff packet, maybe due to 0rtt?")
 		}
-		//check if we are in handshake or app data
-		if c.droppedInitialKeys || c.handshakeConfirmed {
-			c.frontDefense.SentChaffPacket(now)
-			// chaff packet size should be mtu sized
-			// basically a ping + padding to mtu
-			buf := getPacketBuffer()
-			ecn := c.sentPacketHandler.ECNMode(true)
-			mtu := protocol.ByteCount(c.currentMTUEstimate.Load())
-			//this will always be a short header packet; maybe this will not work if droppedinitialkeys is true but handshakeconfirmed is false...
-			p, err := c.packer.AppendPacket(buf, mtu, true, now, c.version)
-			if err != nil {
-				if err != errNothingToPack {
-					return err
-				}
-				if buf.Len() == 0 {
-					buf.Release()
-					return nil
-				}
-			}
-			c.logShortHeaderPacket(p.DestConnID, p.Ack, p.Frames, p.StreamFrames, p.PacketNumber, p.PacketNumberLen, p.KeyPhase, ecn, buf.Len(), false)
-			c.sendQueue.Send(buf, 0, ecn)
-			// There's (likely) more data to send. Loop around again.
-			c.scheduleSending()
-			return nil
-		}
-	}
+		// There's (likely) more data to send. Loop around again.
+		c.scheduleSending()
+		return nil
+		//QCSD chaff packets will delay PMTUD packets
+		// //if c.handshakeConfirmed {
+		// 	//c.logger.Debugf("What are we doing here?")
+		// 	//check if we are in handshake or app data
+		// 	c.frontDefense.SentChaffPacket(now)
+		// 	//
+		// 	//
+		// 	//
+		// 	//
+		// 	// chaff packet size should be mtu sized
+		// 	// basically a ping + padding to mtu
+		// 	// buf := getPacketBuffer()
+		// 	// ecn := c.sentPacketHandler.ECNMode(true)
+		// 	// mtu := protocol.ByteCount(c.currentMTUEstimate.Load())
+		// 	// //this will always be a short header packet; maybe this will not work if droppedinitialkeys is true but handshakeconfirmed is false...
+		// 	// p, err := c.packer.AppendPacket(buf, mtu, true, now, c.version)
+		// 	// if err != nil {
+		// 	// 	if err != errNothingToPack {
+		// 	// 		return err
+		// 	// 	}
+		// 	// 	if buf.Len() == 0 {
+		// 	// 		buf.Release()
+		// 	// 		return nil
+		// 	// 	}
+		// 	// }
+		// 	// c.logShortHeaderPacket(p.DestConnID, p.Ack, p.Frames, p.StreamFrames, p.PacketNumber, p.PacketNumberLen, p.KeyPhase, ecn, buf.Len(), false)
+		// 	// c.registerPackedShortHeaderPacket(p, ecn, now)
+		// 	// //
+		// 	// //
+		// 	// //
+		// 	// //
+		// 	// c.sendQueue.Send(buf, 0, ecn)
+		// 	err := c.sendChaffPacket(now)
+		// 	if err != nil {
+		// 		c.logger.Debugf("unable to send chaff packet, maybe due to 0rtt?")
+		// 	}
+		// 	// There's (likely) more data to send. Loop around again.
+		// 	c.scheduleSending()
+		// 	return nil
+		// 	//}
+	} /*else {
+		c.logger.Debugf("No Chaff")
+	}*/
 
 	// Path MTU Discovery
 	// Can't use GSO, since we need to send a single packet that's larger than our current maximum size.
@@ -2237,6 +2248,78 @@ func (c *Conn) sendPackets(now time.Time) error {
 		return c.sendPacketsWithGSO(now)
 	}
 	return c.sendPacketsWithoutGSO(now)
+}
+
+func (c *Conn) sendChaffPacket(now time.Time) error {
+	//need to be able to send long and short header chaff packets for QCSD
+	if !c.handshakeConfirmed {
+		ecn := c.sentPacketHandler.ECNMode(false)
+		//generate a packet
+		p, buf, err := c.packer.PackChaffLongPacket(c.maxPacketSize(), c.version)
+		if err != nil {
+			return err
+		}
+		// log
+		c.logger.Debugf("-> Sending chaff packet (%d bytes) for connection %s", buf.Len(), c.logID)
+		fmt.Println("-> Sending chaff packet (%d bytes) for connection %s", buf.Len(), c.logID)
+		c.logLongHeaderPacket(p, ecn)
+		// register
+		if c.firstAckElicitingPacketAfterIdleSentTime.IsZero() && p.IsAckEliciting() {
+			c.firstAckElicitingPacketAfterIdleSentTime = now
+		}
+		largestAcked := protocol.InvalidPacketNumber
+		if p.ack != nil {
+			largestAcked = p.ack.LargestAcked()
+		}
+		c.sentPacketHandler.SentPacket(
+			now,
+			p.header.PacketNumber,
+			largestAcked,
+			p.streamFrames,
+			p.frames,
+			p.EncryptionLevel(),
+			ecn,
+			p.length,
+			false,
+			false,
+		)
+		c.connIDManager.SentPacket()
+		c.sendQueue.Send(buf, 0, ecn)
+	} else {
+		ecn := c.sentPacketHandler.ECNMode(true)
+		//generate packet
+		p, buf, err := c.packer.PackChaffShortPacket(c.maxPacketSize(), c.version)
+		if err != nil {
+			return err
+		}
+		// log
+		c.logger.Debugf("-> Sending chaff packet (%d bytes) for connection %s", buf.Len(), c.logID)
+		c.logShortHeaderPacket(p.DestConnID, p.Ack, p.Frames, p.StreamFrames, p.PacketNumber, p.PacketNumberLen, p.KeyPhase, ecn, buf.Len(), false)
+		// register
+		if c.firstAckElicitingPacketAfterIdleSentTime.IsZero() && p.IsAckEliciting() {
+			c.firstAckElicitingPacketAfterIdleSentTime = now
+		}
+		largestAcked := protocol.InvalidPacketNumber
+		if p.Ack != nil {
+			largestAcked = p.Ack.LargestAcked()
+		}
+		c.sentPacketHandler.SentPacket(
+			now,
+			p.PacketNumber,
+			largestAcked,
+			p.StreamFrames,
+			p.Frames,
+			protocol.Encryption1RTT,
+			ecn,
+			p.Length,
+			p.IsPathMTUProbePacket,
+			false,
+		)
+
+		c.connIDManager.SentPacket()
+		c.sendQueue.Send(buf, 0, ecn)
+	}
+	return nil
 }
 
 func (c *Conn) sendPacketsWithoutGSO(now time.Time) error {

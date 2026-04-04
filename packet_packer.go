@@ -26,6 +26,8 @@ type packer interface {
 	PackApplicationClose(*qerr.ApplicationError, protocol.ByteCount, protocol.Version) (*coalescedPacket, error)
 	PackPathProbePacket(protocol.ConnectionID, []ackhandler.Frame, protocol.Version) (shortHeaderPacket, *packetBuffer, error)
 	PackMTUProbePacket(ping ackhandler.Frame, size protocol.ByteCount, v protocol.Version) (shortHeaderPacket, *packetBuffer, error)
+	PackChaffShortPacket(maxPacketSize protocol.ByteCount, v protocol.Version) (shortHeaderPacket, *packetBuffer, error)
+	PackChaffLongPacket(maxPacketSize protocol.ByteCount, v protocol.Version) (*longHeaderPacket, *packetBuffer, error)
 
 	SetToken([]byte)
 }
@@ -815,6 +817,53 @@ func (p *packetPacker) packPTOProbePacket1RTT(maxPacketSize protocol.ByteCount, 
 	}
 	packet.shortHdrPacket = &shp
 	return packet, nil
+}
+
+func (p *packetPacker) PackChaffShortPacket(maxPacketSize protocol.ByteCount, v protocol.Version) (shortHeaderPacket, *packetBuffer, error) {
+	ping := ackhandler.Frame{Frame: &wire.PingFrame{}, Handler: emptyHandler{}}
+	pl := payload{
+		frames: []ackhandler.Frame{ping},
+		length: ping.Frame.Length(v),
+	}
+	buffer := getPacketBuffer()
+	sealer, err := p.cryptoSetup.Get1RTTSealer()
+	if err != nil {
+		return shortHeaderPacket{}, nil, err
+	}
+	pn, pnLen := p.pnManager.PeekPacketNumber(protocol.Encryption1RTT)
+	connID := p.getDestConnID()
+	padding := maxPacketSize - p.shortHeaderPacketLength(connID, pnLen, pl) - protocol.ByteCount(sealer.Overhead())
+	kp := sealer.KeyPhase()
+	packet, err := p.appendShortHeaderPacket(buffer, connID, pn, pnLen, kp, pl, padding, maxPacketSize, sealer, true, v)
+	return packet, buffer, err
+}
+
+func (p *packetPacker) PackChaffLongPacket(maxPacketSize protocol.ByteCount, v protocol.Version) (*longHeaderPacket, *packetBuffer, error) {
+	var sealer handshake.LongHeaderSealer
+	var encLevel protocol.EncryptionLevel
+	if hs, err := p.cryptoSetup.GetHandshakeSealer(); err == nil {
+		sealer, encLevel = hs, protocol.EncryptionHandshake
+	} else if is, err := p.cryptoSetup.GetInitialSealer(); err == nil {
+		sealer, encLevel = is, protocol.EncryptionInitial
+	} else {
+		return nil, nil, errors.New("no long-header encryption level available")
+	}
+
+	ping := ackhandler.Frame{Frame: &wire.PingFrame{}, Handler: emptyHandler{}}
+	pl := payload{
+		frames: []ackhandler.Frame{ping},
+		length: ping.Frame.Length(v),
+	}
+	hdr := p.getLongHeader(encLevel, v)
+	buffer := getPacketBuffer()
+	padding := maxPacketSize - p.longHeaderPacketLength(hdr, pl, v) - protocol.ByteCount(sealer.Overhead())
+
+	longHdrPacket, err := p.appendLongHeaderPacket(buffer, hdr, pl, padding, encLevel, sealer, v)
+	if err != nil {
+		return nil, nil, err
+	}
+	//why are long header packets a reference but short header ones are not?
+	return longHdrPacket, nil, nil
 }
 
 func (p *packetPacker) PackMTUProbePacket(ping ackhandler.Frame, size protocol.ByteCount, v protocol.Version) (shortHeaderPacket, *packetBuffer, error) {

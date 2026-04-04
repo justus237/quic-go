@@ -316,13 +316,17 @@ func (def *chaffDefender) ProcessTimer(now, expiryTime time.Time) {
 			def.chaffPacketQueue += 1
 			def.defenseSchedule = def.defenseSchedule[1:]
 		}
+		if len(def.defenseSchedule) == 0 {
+			def.end = now
+		}
 		cancelExpiryAt := expiryTime.Add(-100 * time.Millisecond)
-		if def.end.IsZero() && cancelExpiryAt.After(now) && def.chaffPacketQueue == 0 {
+		if def.end.IsZero() && !cancelExpiryAt.After(now) && def.chaffPacketQueue == 0 {
+			log.Printf("Need keepalive; %d packets in schedule remaining\n", len(def.defenseSchedule))
 			def.needsKeepalive = true
 		}
 	}
 
-	log.Printf("%d packets in queue\n", def.chaffPacketQueue)
+	//log.Printf("%d packets in queue\n", def.chaffPacketQueue)
 
 }
 
@@ -336,6 +340,7 @@ func (def *chaffDefender) NeedsKeepalive() bool {
 
 func (def *chaffDefender) NeedsChaff() bool {
 	if !def.controlIntervalIsSlidingWindow {
+		//log.Printf("NeedsChaff; %d packets in queue\n", def.chaffPacketQueue)
 		return def.chaffPacketQueue > 0
 	}
 	return false
@@ -351,5 +356,6 @@ func (def *chaffDefender) NeedsPadding() bool {
 func (def *chaffDefender) SentChaffPacket(now time.Time) {
 	if def.chaffPacketQueue > 0 {
 		def.chaffPacketQueue -= 1
+		//log.Printf("Sent chaff/padding; %d packets in queue\n", def.chaffPacketQueue)
 	}
 }
