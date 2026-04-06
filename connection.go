@@ -348,7 +348,7 @@ var newConnection = func(
 	// TODO: initialize the chaff defender with some more CIDs so that it's easier to identify the connection's defense trace
 	// TODO: maybe make it nil if we are not defending? would require some changes to NextTimer being called...
 	s.frontDefense = newChaffDefender()
-	if conf.EnableFrontDefense && !conf.FrontDefenseSlidingWindow {
+	/*if conf.EnableFrontDefense && !conf.FrontDefenseSlidingWindow {
 		// can we cast this to a UDPAddr?
 		var remotePort string
 		if strings.Contains(conn.RemoteAddr().String(), ":") {
@@ -361,7 +361,7 @@ var newConnection = func(
 
 		s.frontDefense.InitSchedule(newFrontConfig(), remotePort, conf.FrontDefenseSlidingWindow)
 		s.frontDefense.Start(s.creationTime)
-	}
+	}*/
 	//log.Println("CONNECTION BEING SETUP")
 	return &wrappedConn{Conn: s}
 }
@@ -860,7 +860,7 @@ func (c *Conn) handleHandshakeComplete(now time.Time) error {
 	// i.e., ideally we would also have padding for init and handshake packets like in neqo
 	// the packer api has all the methods for initial and handshake packets in PackCoalescedPacket
 	// soooo TODO: modify other packer functions to also be able to send dummy packets in other TLS epochs than application
-	if c.config.EnableFrontDefense && c.config.FrontDefenseSlidingWindow {
+	if c.config.EnableFrontDefense { //&& c.config.FrontDefenseSlidingWindow {
 		serverHostname := c.cryptoStreamHandler.ConnectionState().ConnectionState.ServerName
 		if len(serverHostname) == 0 {
 			serverHostname = c.LocalAddr().String()
