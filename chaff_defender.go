@@ -30,6 +30,9 @@ type defenseRunner interface {
 	NeedsChaff() bool
 	SentChaffPacket(now time.Time)
 	NeedsKeepalive() bool
+	// Stop signals that the defense is over (e.g. because the connection is closing),
+	// removing the defense-state lock file if one was created.
+	Stop()
 	/*CurrentSize() protocol.ByteCount
 	GetPing(now time.Time) (ping ackhandler.Frame, datagramSize protocol.ByteCount)
 	Reset(now time.Time, start, max protocol.ByteCount)*/
@@ -121,6 +124,11 @@ type chaffDefender struct {
 
 	remotePort string
 
+	// path of the lock file signaling to the firefox automation that a server-side
+	// defense is in progress; empty if DEFENSE_SERVER_STATE_DIR is unset. Removed once
+	// the defense finishes (see signalDefenseDone).
+	defenseStateFile string
+
 	controlIntervalIsSlidingWindow bool
 
 	needsKeepalive bool
@@ -149,7 +157,6 @@ func (def *chaffDefender) Start(now time.Time) {
 		def.controlIntervalLength = time.Millisecond * 5
 		def.nextUpdate = now
 		//log.Println("Defense starting", now)
-		//TODO: add hacky defense state signaling via files here...
 	} else {
 		log.Println("ChaffDefender.Start called multiple times!")
 	}
@@ -192,6 +199,21 @@ func (def *chaffDefender) InitSchedule(defenseConfig defenseConfig, remotePort s
 			}
 			dataWriter.Flush()
 			file.Close()
+		}
+
+		// signal to the firefox automation that a server-side defense is in progress by
+		// creating a lock file; the automation polls DEFENSE_SERVER_STATE_DIR and waits
+		// until it is empty. The file is removed again once the defense finishes (see
+		// signalDefenseDone). We mirror the CSV naming so the lock is traceable to its
+		// schedule; the automation only cares that the directory is non-empty.
+		if stateDir, exists := os.LookupEnv("DEFENSE_SERVER_STATE_DIR"); exists {
+			path := filepath.Join(stateDir, fmt.Sprintf("%s-server-side-front-defense-seed-%s", def.remotePort, strconv.FormatUint(seed, 10)))
+			if file, err := os.Create(path); err != nil {
+				log.Println("failed creating defense state file", path, "error:", err)
+			} else {
+				file.Close()
+				def.defenseStateFile = path
+			}
 		}
 
 	} else {
@@ -295,6 +317,7 @@ func (def *chaffDefender) ProcessTimer(now, expiryTime time.Time) {
 		if len(def.defenseSchedule) == 0 {
 			def.end = now
 			def.nextUpdate = time.Time{}
+			def.signalDefenseDone()
 		} else {
 			// we peak into the defense trace to see when the next dummy packet is due
 			def.nextUpdate = def.start.Add(def.defenseSchedule[0])
@@ -319,6 +342,7 @@ func (def *chaffDefender) ProcessTimer(now, expiryTime time.Time) {
 		}
 		if len(def.defenseSchedule) == 0 {
 			def.end = now
+			def.signalDefenseDone()
 		}
 		cancelExpiryAt := expiryTime.Add(-100 * time.Millisecond)
 		if def.end.IsZero() && !cancelExpiryAt.After(now) && def.chaffPacketQueue == 0 {
@@ -359,4 +383,24 @@ func (def *chaffDefender) SentChaffPacket(now time.Time) {
 		def.chaffPacketQueue -= 1
 		//log.Printf("Sent chaff/padding; %d packets in queue\n", def.chaffPacketQueue)
 	}
+}
+
+// signalDefenseDone removes the defense-state lock file, telling the firefox automation
+// that this connection's defense has finished. It is a no-op if no file was created.
+func (def *chaffDefender) signalDefenseDone() {
+	if def.defenseStateFile == "" {
+		return
+	}
+	if err := os.Remove(def.defenseStateFile); err != nil {
+		// retry once, mirroring the neqo implementation, then leave the file in place
+		if err := os.Remove(def.defenseStateFile); err != nil {
+			log.Println("could not remove defense state file", def.defenseStateFile, "error:", err)
+			return
+		}
+	}
+	def.defenseStateFile = ""
+}
+
+func (def *chaffDefender) Stop() {
+	def.signalDefenseDone()
 }

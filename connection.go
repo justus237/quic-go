@@ -721,6 +721,8 @@ runLoop:
 	}
 
 	closeErr := c.closeErr.Load()
+	// remove the defense-state lock file if the defense didn't finish on its own
+	c.frontDefense.Stop()
 	c.cryptoStreamHandler.Close()
 	c.sendQueue.Close() // close the send queue before sending the CONNECTION_CLOSE
 	c.handleCloseError(closeErr)
