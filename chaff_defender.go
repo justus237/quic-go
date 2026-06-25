@@ -45,17 +45,17 @@ type defenseConfig interface {
 }
 
 type frontConfig struct {
-	nofServerPackets uint32
+	maxServerPackets uint32
 	peakMin          float64
 	peakMax          float64
 	seed             uint64
 }
 
-func newFrontConfig() *frontConfig {
+func newFrontConfig(peakMin, peakMax float64, maxServerPackets uint32) *frontConfig {
 	return &frontConfig{
-		nofServerPackets: 1300,
-		peakMin:          0.2,
-		peakMax:          3.0,
+		maxServerPackets: maxServerPackets,
+		peakMin:          peakMin,
+		peakMax:          peakMax,
 		seed:             0,
 	}
 }
@@ -64,7 +64,7 @@ func (fConf *frontConfig) InitSchedule() []time.Duration {
 	//randv2; not entirely sure why two seeds are needed?
 	rng := rand.New(rand.NewPCG(fConf.seed, fConf.seed))
 	//since we are the server in quic-go (no checks for that though!) the outgoing packets are using nofServerPackets
-	outgoingPackets := samplePacketTimestamps(fConf.peakMin, fConf.peakMax, fConf.nofServerPackets, rng)
+	outgoingPackets := samplePacketTimestamps(fConf.peakMin, fConf.peakMax, fConf.maxServerPackets, rng)
 	// TODO: I think a lot of the code can be simplified if we reverse this list
 	sort.Slice(outgoingPackets, func(i, j int) bool {
 		return outgoingPackets[i] < outgoingPackets[j]
@@ -174,13 +174,14 @@ func (def *chaffDefender) InitSchedule(defenseConfig defenseConfig, remotePort s
 		def.remotePort = remotePort
 		def.controlIntervalIsSlidingWindow = controlIntervalIsSlidingWindow
 		//read seed from env var, otherwise randomly generate
-		seedFromEnv, exists := os.LookupEnv("FRONT_SEED")
+		//seedFromEnv, exists := os.LookupEnv("FRONT_SEED")
+		// [TODO]: make seed configurable through CLI instead
 		seed := rand.Uint64()
-		if exists {
+		/*if exists {
 			if seedParsed, err := strconv.ParseUint(seedFromEnv, 10, 64); err == nil {
 				seed = seedParsed
 			}
-		}
+		}*/
 		defenseConfig.SetSeed(seed)
 		def.defenseSchedule = defenseConfig.InitSchedule()
 		csvPath, exists := os.LookupEnv("TRACE_CSV_DIR")
