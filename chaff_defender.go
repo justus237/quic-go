@@ -51,7 +51,7 @@ type frontConfig struct {
 	seed             uint64
 }
 
-func newFrontConfig(peakMin, peakMax float64, maxServerPackets uint32) *frontConfig {
+func newFrontConfig(maxServerPackets uint32, peakMin, peakMax float64) *frontConfig {
 	return &frontConfig{
 		maxServerPackets: maxServerPackets,
 		peakMin:          peakMin,

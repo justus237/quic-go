@@ -184,9 +184,9 @@ type Config struct {
 
 	EnableFrontDefense           bool
 	FrontDefenseSlidingWindow    bool
+	FrontDefenseMaxServerPackets uint32
 	FrontDefensePeakMin          float64
 	FrontDefensePeakMax          float64
-	FrontDefenseMaxServerPackets uint32
 	// Allow0RTT allows the application to decide if a 0-RTT connection attempt should be accepted.
 	// Only valid for the server.
 	Allow0RTT bool

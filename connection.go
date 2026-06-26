@@ -880,7 +880,7 @@ func (c *Conn) handleHandshakeComplete(now time.Time) error {
 			}
 		}
 
-		c.frontDefense.InitSchedule(newFrontConfig(c.config.FrontDefensePeakMin, c.config.FrontDefensePeakMax, c.config.FrontDefenseMaxServerPackets), remotePort, c.config.FrontDefenseSlidingWindow)
+		c.frontDefense.InitSchedule(newFrontConfig(c.config.FrontDefenseMaxServerPackets, c.config.FrontDefensePeakMin, c.config.FrontDefensePeakMax), remotePort, c.config.FrontDefenseSlidingWindow)
 		c.frontDefense.Start(now)
 	}
 
