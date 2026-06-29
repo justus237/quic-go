@@ -409,5 +409,5 @@ func (def *chaffDefender) signalDefenseDone() {
 }
 
 func (def *chaffDefender) Stop() {
-	def.signalDefenseDone()
+	log.Println("stopping defense, trace left in queue:", len(def.defenseSchedule))
 }
