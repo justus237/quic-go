@@ -52,7 +52,7 @@ type frontConfig struct {
 }
 
 func newFrontConfig(maxServerPackets uint32, peakMin, peakMax float64) *frontConfig {
-	fmt.Printf("FRONT config: maxServerPackets=%d, peakMin=%f, peakMax=%f\n", maxServerPackets, peakMin, peakMax)
+	fmt.Printf("PID %d: FRONT config: maxServerPackets=%d, peakMin=%f, peakMax=%f\n", os.Getpid(), maxServerPackets, peakMin, peakMax)
 	return &frontConfig{
 		maxServerPackets: maxServerPackets,
 		peakMin:          peakMin,
