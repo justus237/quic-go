@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"os"
 	"reflect"
 	"slices"
 	"strings"
@@ -830,6 +831,42 @@ func (c *Conn) switchToNewPath(tr *Transport, now time.Time) {
 	}()
 }
 
+// shouldRunFrontDefense decides whether this connection runs a FRONT defense.
+//
+// If FRONT_DEFENSE_CLAIM_FILE is unset, every connection defends (the previous behavior).
+// If it is set, the defense runs on only the first QUIC connection across ALL server
+// processes: the first connection to atomically create the claim file (O_CREATE|O_EXCL)
+// wins; every other connection, in this or any other process, sees the file already exists
+// and skips. O_EXCL create is atomic across processes on the shared local filesystem, so no
+// in-process state is needed.
+//
+// quic-go intentionally never removes the claim file: its lifetime is the whole measurement.
+// The orchestration must remove it once before each measurement (next to where it sets up the
+// defense-state dir) so each measurement starts unclaimed; cleaning it up here would let a
+// later connection re-claim the defense.
+func (c *Conn) shouldRunFrontDefense() bool {
+	claimPath, ok := os.LookupEnv("FRONT_DEFENSE_CLAIM_FILE")
+	if !ok {
+		return true
+	}
+	file, err := os.OpenFile(claimPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+	switch {
+	case err == nil:
+		// we won the claim; record the PID for debuggability, then leave the file in place
+		fmt.Fprintf(file, "%d\n", os.Getpid())
+		file.Close()
+		return true
+	case os.IsExist(err):
+		c.logger.Debugf("skipping front defense for CID %s: already claimed", c.connIDManager.Get().String())
+		return false
+	default:
+		// unexpected error (missing dir, permissions, ...): skip rather than risk running the
+		// defense on every connection, but log loudly since it means no defense runs at all.
+		c.logger.Errorf("front defense claim failed (%s): %s; skipping defense for this connection", claimPath, err)
+		return false
+	}
+}
+
 func (c *Conn) handleHandshakeComplete(now time.Time) error {
 	defer close(c.handshakeCompleteChan)
 	// Once the handshake completes, we have derived 1-RTT keys.
@@ -862,7 +899,7 @@ func (c *Conn) handleHandshakeComplete(now time.Time) error {
 	// i.e., ideally we would also have padding for init and handshake packets like in neqo
 	// the packer api has all the methods for initial and handshake packets in PackCoalescedPacket
 	// soooo TODO: modify other packer functions to also be able to send dummy packets in other TLS epochs than application
-	if c.config.EnableFrontDefense { //&& c.config.FrontDefenseSlidingWindow {
+	if c.config.EnableFrontDefense && c.shouldRunFrontDefense() { //&& c.config.FrontDefenseSlidingWindow {
 		serverHostname := c.cryptoStreamHandler.ConnectionState().ConnectionState.ServerName
 		if len(serverHostname) == 0 {
 			serverHostname = c.LocalAddr().String()
