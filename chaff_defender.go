@@ -52,6 +52,7 @@ type frontConfig struct {
 }
 
 func newFrontConfig(maxServerPackets uint32, peakMin, peakMax float64) *frontConfig {
+	fmt.Printf("FRONT config: maxServerPackets=%d, peakMin=%f, peakMax=%f\n", maxServerPackets, peakMin, peakMax)
 	return &frontConfig{
 		maxServerPackets: maxServerPackets,
 		peakMin:          peakMin,
@@ -173,6 +174,11 @@ func (def *chaffDefender) InitSchedule(defenseConfig defenseConfig, remotePort s
 		def.dstConnID = dstConnID*/
 		def.remotePort = remotePort
 		def.controlIntervalIsSlidingWindow = controlIntervalIsSlidingWindow
+		// add qcsd to csv if not sliding window mode
+		is_qcsd_str := ""
+		if !controlIntervalIsSlidingWindow {
+			is_qcsd_str = "-qcsd"
+		}
 		//read seed from env var, otherwise randomly generate
 		//seedFromEnv, exists := os.LookupEnv("FRONT_SEED")
 		// [TODO]: make seed configurable through CLI instead
@@ -186,7 +192,7 @@ func (def *chaffDefender) InitSchedule(defenseConfig defenseConfig, remotePort s
 		def.defenseSchedule = defenseConfig.InitSchedule()
 		csvPath, exists := os.LookupEnv("TRACE_CSV_DIR")
 		if exists {
-			path := filepath.Join(csvPath, fmt.Sprintf("%s-server-side-front-defense-seed-%s.csv", def.remotePort, strconv.FormatUint(seed, 10)))
+			path := filepath.Join(csvPath, fmt.Sprintf("%s-server-side-front-defense%s-seed-%s.csv", def.remotePort, is_qcsd_str, strconv.FormatUint(seed, 10)))
 			file, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0666)
 			if err != nil {
 				return
