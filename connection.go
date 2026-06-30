@@ -2318,7 +2318,7 @@ func (c *Conn) sendChaffPacket(now time.Time) error {
 		}
 		// log
 		c.logger.Debugf("-> Sending chaff packet (%d bytes) for connection %s, pn=%d, epoch=%s", buf.Len(), c.logID, p.header.PacketNumber, p.EncryptionLevel())
-		fmt.Println("-> Sending chaff packet (%d bytes) for connection %s", buf.Len(), c.logID)
+		//fmt.Println("-> Sending chaff packet (%d bytes) for connection %s", buf.Len(), c.logID)
 		c.logLongHeaderPacket(p, ecn)
 		// register
 		if c.firstAckElicitingPacketAfterIdleSentTime.IsZero() && p.IsAckEliciting() {
