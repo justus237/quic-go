@@ -308,8 +308,8 @@ func (def *chaffDefender) ProcessTimer(now, expiryTime time.Time) {
 
 		// drop packets outsie the window into the past
 		for len(def.defenseSchedule) > 0 && def.defenseSchedule[0] < startOfCurrentControlInterval {
-			missedDummyPacket := def.start.Add(def.defenseSchedule[0])
-			log.Println("missed defense packet at", missedDummyPacket) //, "for server", def.serverName, "DCID", def.dstConnID)
+			//missedDummyPacket := def.start.Add(def.defenseSchedule[0])
+			//log.Println("missed defense packet at", missedDummyPacket) //, "for server", def.serverName, "DCID", def.dstConnID)
 			def.defenseSchedule = def.defenseSchedule[1:]
 		}
 		// add packets within the window
@@ -328,8 +328,8 @@ func (def *chaffDefender) ProcessTimer(now, expiryTime time.Time) {
 		} else {
 			// we peak into the defense trace to see when the next dummy packet is due
 			def.nextUpdate = def.start.Add(def.defenseSchedule[0])
-			timeoutDuration := def.nextUpdate.Sub(now)
-			log.Println("duration until next dummy packet: ", timeoutDuration)
+			//timeoutDuration := def.nextUpdate.Sub(now)
+			//log.Println("duration until next dummy packet: ", timeoutDuration)
 		}
 	} else {
 		if def.start.IsZero() || !def.end.IsZero() {
@@ -353,7 +353,7 @@ func (def *chaffDefender) ProcessTimer(now, expiryTime time.Time) {
 		}
 		cancelExpiryAt := expiryTime.Add(-100 * time.Millisecond)
 		if def.end.IsZero() && !cancelExpiryAt.After(now) && def.chaffPacketQueue == 0 {
-			log.Printf("Need keepalive; %d packets in schedule remaining\n", len(def.defenseSchedule))
+			//log.Printf("Need keepalive; %d packets in schedule remaining\n", len(def.defenseSchedule))
 			def.needsKeepalive = true
 		}
 	}
